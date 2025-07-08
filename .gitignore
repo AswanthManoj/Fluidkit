@@ -212,4 +212,8 @@ __marimo__/
 tests/app.ts
 tests/schema.ts
 .fluidkit/
-
+fluid.config.json
+*.ts
+app.ts
+orders.ts
+users.ts

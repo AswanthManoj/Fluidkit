@@ -1,19 +1,20 @@
 """
 FluidKit V2 App Integration
 
-Main integration API for FluidKit with FastAPI applications with multi-language support.
-Orchestrates route collection, model discovery, and optional code generation.
+Config-driven integration API for FluidKit with FastAPI applications with multi-language support.
+Orchestrates route collection, model discovery, and optional code generation supporting both normal flow
+(client generation only) and full-stack flow (framework + proxying).
 """
 
 import logging
-from enum import Enum
 from pathlib import Path
 from fastapi import FastAPI
-from typing import List, Dict, Tuple
 from fastapi.routing import APIRoute
+from typing import List, Dict, Tuple, Optional
 
 from fluidkit.introspection.routes import route_to_node
 from fluidkit.introspection.models import discover_models_from_routes
+from fluidkit.core.config import load_fluidkit_config, FluidKitConfig
 from fluidkit.core.schema import FluidKitApp, RouteNode, LanguageType
 
 
@@ -21,21 +22,23 @@ logger = logging.getLogger(__name__)
 
 
 def integrate(
-    app: FastAPI, 
-    lang: str = "typescript",
-    strategy: str = "mirror",
+    app: FastAPI,
+    lang: Optional[str] = None,  # Default to typescript when None
+    config_path: Optional[str] = None,
+    project_root: Optional[str] = None,
     verbose: bool = False,
     **options
 ) -> Tuple[FluidKitApp, Dict[str, str]]:
     """
-    Integrate FluidKit with FastAPI app using runtime introspection.
+    Integrate FluidKit with FastAPI app using configuration-driven approach.
     
     Args:
         app: FastAPI application instance
-        lang: Target language for code generation ("ts"/"typescript" default)
-        strategy: Generation strategy ("co-locate" or "mirror")
+        lang: Target language for code generation (defaults to "typescript")
+        config_path: Path to fluid.config.json (auto-detected if None)
+        project_root: Project root directory (defaults to current directory)
         verbose: Enable detailed logging
-        **options: Additional options (project_root, runtime config, etc.)
+        **options: Additional options for backward compatibility
         
     Returns:
         (FluidKitApp, generated_files_dict)
@@ -43,11 +46,25 @@ def integrate(
     if verbose:
         logging.basicConfig(level=logging.DEBUG, format='%(levelname)s: %(message)s')
     
-    project_root = options.get('project_root') or str(Path.cwd().resolve())
+    # Determine project root
+    if project_root is None:
+        project_root = str(Path.cwd().resolve())
+    else:
+        project_root = str(Path(project_root).resolve())
+    
+    # Load FluidKit configuration
+    config = load_fluidkit_config(project_root)
+    
+    # Override config with explicit parameters (backward compatibility)
+    if 'strategy' in options:
+        config.output.strategy = options['strategy']
     
     if verbose:
-        logger.info("Starting FluidKit integration with FastAPI app")
+        logger.info("Starting FluidKit integration")
         logger.debug(f"Project root: {project_root}")
+        logger.debug(f"Config framework: {config.framework}")
+        logger.debug(f"Output strategy: {config.output.strategy}")
+        logger.debug(f"Output location: {config.output.location}")
     
     # Collect and convert routes
     api_routes = _collect_fastapi_routes(app)
@@ -61,39 +78,47 @@ def integrate(
         models=model_nodes,
         routes=route_nodes,
         app_instance=app,
-        metadata={'project_root': project_root, **options}
+        metadata={
+            'project_root': project_root,
+            'config': config,
+            **options
+        }
     )
     
     if verbose:
         logger.info(f"Introspection complete: {len(route_nodes)} routes, {len(model_nodes)} models")
     
-    # Generate TypeScript files
-    normalized_lang = _normalize_language(lang)
+    # Generate client code
+    target_lang = lang or "typescript"
+    normalized_lang = _normalize_language(target_lang)
     
     if normalized_lang == LanguageType.TYPESCRIPT:
-        generated_files = _generate_and_write_typescript(fluid_app, strategy, verbose, **options)
+        generated_files = _generate_and_write_typescript(fluid_app, config, verbose, **options)
         
         if not verbose:
-            print(f"FluidKit: Generated {len(generated_files)} TypeScript files ({strategy} strategy)")
+            file_count = len(generated_files)
+            flow_type = "full-stack" if config.is_fullstack_config else "normal"
+            print(f"FluidKit: Generated {file_count} TypeScript files ({flow_type} flow)")
         
         return fluid_app, generated_files
     
     else:
-        raise NotImplementedError(f"Language '{lang}' not yet supported. Currently supported: ts, typescript")
-    
+        raise NotImplementedError(f"Language '{lang}' not yet supported. Currently supported: typescript")
+
 
 def _generate_and_write_typescript(
     fluid_app: FluidKitApp, 
-    strategy: str, 
+    config: FluidKitConfig,
     verbose: bool,
     **options
 ) -> Dict[str, str]:
-    """Generate TypeScript files and write them to disk."""
+    """Generate TypeScript files using configuration settings."""
     from fluidkit.generators.typescript.pipeline import generate_typescript_files
     
+    # Pass config to generation pipeline
     generated_files = generate_typescript_files(
         fluid_app=fluid_app,
-        strategy=strategy,
+        config=config,
         **options
     )
     
@@ -147,7 +172,7 @@ Changes will be overwritten on regeneration.
  * Changes will be overwritten on regeneration.
  */
 
- '''
+'''
 
 
 def _normalize_language(lang: str) -> LanguageType:
@@ -156,11 +181,10 @@ def _normalize_language(lang: str) -> LanguageType:
     
     if lang_lower in ["ts", "typescript"]:
         return LanguageType.TYPESCRIPT
-    
     else:
         valid_langs = ["ts", "typescript"]
         raise ValueError(f"Unsupported language '{lang}'. Supported: {', '.join(valid_langs)}")
-    
+
 
 def _collect_fastapi_routes(app: FastAPI) -> List[APIRoute]:
     """Collect user-defined API routes from FastAPI app."""
@@ -214,9 +238,15 @@ def _is_user_defined_route(route: APIRoute) -> bool:
     return True
 
 
-def introspect_only(app: FastAPI, **options) -> FluidKitApp:
+# === CONVENIENCE FUNCTIONS === #
+
+def introspect_only(app: FastAPI, project_root: Optional[str] = None, **options) -> FluidKitApp:
     """Convenience function for introspection only (no code generation)."""
-    project_root = options.get('project_root') or str(Path.cwd().resolve())
+    if project_root is None:
+        project_root = str(Path.cwd().resolve())
+    
+    # Load config for consistency
+    config = load_fluidkit_config(project_root)
     
     api_routes = _collect_fastapi_routes(app)
     route_nodes = _convert_routes_to_nodes(api_routes)
@@ -226,18 +256,27 @@ def introspect_only(app: FastAPI, **options) -> FluidKitApp:
         models=model_nodes,
         routes=route_nodes,
         app_instance=app,
-        metadata={'project_root': project_root, **options}
+        metadata={'project_root': project_root, 'config': config, **options}
     )
     
-    print(f"FluidKit: Introspected {len(route_nodes)} routes, {len(model_nodes)} models")
+    flow_type = "full-stack" if config.is_fullstack_config else "normal"
+    print(f"FluidKit: Introspected {len(route_nodes)} routes, {len(model_nodes)} models ({flow_type} flow)")
     return fluid_app
 
 
-def generate_only(app: FastAPI, strategy: str = "mirror", **options) -> Dict[str, str]:
+def generate_only(
+    app: FastAPI, 
+    project_root: Optional[str] = None, 
+    **options
+) -> Dict[str, str]:
     """Convenience function to generate files without writing to disk."""
     from fluidkit.generators.typescript.pipeline import generate_typescript_files
     
-    project_root = options.get('project_root') or str(Path.cwd().resolve())
+    if project_root is None:
+        project_root = str(Path.cwd().resolve())
+    
+    # Load config for generation settings
+    config = load_fluidkit_config(project_root)
     
     api_routes = _collect_fastapi_routes(app)
     route_nodes = _convert_routes_to_nodes(api_routes)
@@ -247,35 +286,38 @@ def generate_only(app: FastAPI, strategy: str = "mirror", **options) -> Dict[str
         models=model_nodes,
         routes=route_nodes,
         app_instance=app,
-        metadata={'project_root': project_root, **options}
+        metadata={'project_root': project_root, 'config': config, **options}
     )
     
     generated_files = generate_typescript_files(
         fluid_app=fluid_app,
-        strategy=strategy,
+        config=config,
         **options
     )
     
-    print(f"FluidKit: Generated {len(generated_files)} TypeScript files ({strategy} strategy) - not written to disk")
+    flow_type = "full-stack" if config.is_fullstack_config else "normal"
+    print(f"FluidKit: Generated {len(generated_files)} TypeScript files ({flow_type} flow) - not written to disk")
     return generated_files
 
 
 # === TESTING FUNCTION === #
 
 def test_integration():
-    """Test the integration with file writing."""
+    """Test the updated integration with config system."""
     try:
         from tests.sample.app import app
         
-        print("=== FLUIDKIT V2 INTEGRATION TEST ===")
+        print("=== FLUIDKIT CONFIG-DRIVEN INTEGRATION TEST ===")
         
-        # Test 1: Default integration (generates and writes files)
-        print("\n1. Default integration (mirror strategy):")
+        # Test 1: Normal flow (default config creation)
+        print("\n1. Normal flow integration:")
         fluid_app, files = integrate(app)
         
-        # Test 2: Co-locate strategy
-        print("\n2. Co-locate strategy:")
-        fluid_app, files = integrate(app, strategy="co-locate")
+        # Test 2: Custom project root
+        print("\n2. Custom project root:")
+        import tempfile
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fluid_app, files = integrate(app, project_root=temp_dir)
         
         # Test 3: Introspection only
         print("\n3. Introspection only:")
@@ -285,10 +327,10 @@ def test_integration():
         print("\n4. Generate only (no file writing):")
         files = generate_only(app)
         
-        print("\n✅ All tests passed!")
+        print("\n✅ All integration tests passed!")
         
     except ImportError:
-        print("❌ Could not import v2.examples.test - ensure example files exist")
+        print("❌ Could not import test app - ensure test files exist")
     except Exception as e:
         print(f"❌ Test failed: {e}")
         import traceback

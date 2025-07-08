@@ -10,6 +10,7 @@ into complete TypeScript files with proper import statements.
 from pathlib import Path
 from typing import Dict, List, Union
 
+from fluidkit.core.config import FluidKitConfig
 from fluidkit.core.schema import FluidKitApp, RouteNode, ModelNode
 from fluidkit.core.constants import FluidKitRuntime, GenerationPaths
 from fluidkit.generators.typescript.interfaces import generate_interface
@@ -19,29 +20,37 @@ from fluidkit.generators.typescript.imports import ImportContext, generate_impor
 
 def generate_typescript_files(
     fluid_app: FluidKitApp,
-    strategy: str = "mirror",
+    config: FluidKitConfig,
     **runtime_config
 ) -> Dict[str, str]:
     """
-    Generate complete TypeScript files from FluidKitApp.
+    Generate complete TypeScript files from FluidKitApp using configuration.
     
-    Simplified: Only generates project files, no external folder.
+    Args:
+        fluid_app: Complete FluidKit app model
+        config: FluidKit configuration object
+        **runtime_config: Override runtime function names (for advanced use)
+        
+    Returns:
+        Dict mapping file_path -> generated_content
     """
-    runtime_config.setdefault('api_result_type', FluidKitRuntime.API_RESULT_TYPE)
-    runtime_config.setdefault('get_base_url_fn', FluidKitRuntime.GET_BASE_URL_FN)
-    runtime_config.setdefault('handle_response_fn', FluidKitRuntime.HANDLE_RESPONSE_FN)
+    # Set runtime defaults (can be overridden)
+    runtime_config.setdefault('api_result_type', 'ApiResult')
+    runtime_config.setdefault('get_base_url_fn', 'getBaseUrl')
+    runtime_config.setdefault('handle_response_fn', 'handleResponse')
 
-    project_root = str(Path.cwd().resolve())
+    project_root = fluid_app.metadata.get('project_root', str(Path.cwd().resolve()))
     
     # Group nodes by their generated file locations
-    files_to_generate = _group_nodes_by_generated_files(fluid_app, strategy, project_root)
+    files_to_generate = _group_nodes_by_generated_files(fluid_app, config, project_root)
     
     generated_files = {}
     
+    # Generate TypeScript content files
     for ts_file_path, file_content in files_to_generate.items():
         content = _generate_file_content(
             file_content, 
-            strategy, 
+            config, 
             project_root, 
             fluid_app,
             **runtime_config
@@ -50,30 +59,37 @@ def generate_typescript_files(
         if content.strip():
             generated_files[ts_file_path] = content
     
-    # Always generate FluidKit runtime
-    runtime_path = str(Path.cwd() / GenerationPaths.FLUIDKIT_DIR / GenerationPaths.TYPESCRIPT_RUNTIME)
-    generated_files[runtime_path] = _generate_fluidkit_runtime()
+    # Generate FluidKit runtime
+    runtime_path = _get_runtime_file_path(config, project_root)
+    generated_files[runtime_path] = _generate_fluidkit_runtime(config)
+    
+    # Generate proxy files for framework flow
+    if config.should_generate_proxy:
+        proxy_files = _generate_proxy_files(config, project_root)
+        generated_files.update(proxy_files)
     
     return generated_files
 
 
 def _group_nodes_by_generated_files(
     fluid_app: FluidKitApp, 
-    strategy: str, 
+    config: FluidKitConfig,
     project_root: str
 ) -> Dict[str, Dict[str, List[Union[RouteNode, ModelNode]]]]:
     """Group models and routes by their generated TypeScript file locations."""
     files_content = {}
     
+    # Group models
     for model in fluid_app.models:
-        ts_file_path = _get_generated_file_path(model.location, strategy, project_root)
+        ts_file_path = _get_generated_file_path(model.location, config, project_root)
         
         if ts_file_path not in files_content:
             files_content[ts_file_path] = {"models": [], "routes": []}
         files_content[ts_file_path]["models"].append(model)
     
+    # Group routes
     for route in fluid_app.routes:
-        ts_file_path = _get_generated_file_path(route.location, strategy, project_root)
+        ts_file_path = _get_generated_file_path(route.location, config, project_root)
         
         if ts_file_path not in files_content:
             files_content[ts_file_path] = {"models": [], "routes": []}
@@ -84,7 +100,7 @@ def _group_nodes_by_generated_files(
 
 def _generate_file_content(
     file_content: Dict[str, List[Union[RouteNode, ModelNode]]],
-    strategy: str,
+    config: FluidKitConfig,
     project_root: str,
     fluid_app: FluidKitApp,
     **runtime_config
@@ -100,9 +116,9 @@ def _generate_file_content(
     source_location = all_nodes[0].location
     
     context = ImportContext(
+        config=config,
+        project_root=project_root,
         source_location=source_location,
-        strategy=strategy,
-        project_root=project_root
     )
     
     needs_runtime = len(routes) > 0
@@ -143,159 +159,365 @@ def _generate_file_content(
     return "\n\n".join(sections)
 
 
-def _get_generated_file_path(location, strategy: str, project_root: str) -> str:
-    """Convert ModuleLocation to generated TypeScript file path."""
+def _get_generated_file_path(location, config: FluidKitConfig, project_root: str) -> str:
+    """Convert ModuleLocation to generated TypeScript file path using config."""
     if not location.file_path:
         raise ValueError(f"ModuleLocation {location.module_path} has no file_path")
     
     project_root_path = Path(project_root).resolve()
     py_file_path = Path(location.file_path).resolve()
     
-    if strategy == "co-locate":
+    if config.output.strategy == "co-locate":
         return str(py_file_path.with_suffix('.ts'))
-    elif strategy == "mirror":
+    elif config.output.strategy == "mirror":
         try:
             relative_to_project = py_file_path.relative_to(project_root_path)
-            return str(project_root_path / '.fluidkit' / relative_to_project.with_suffix('.ts'))
+            mirror_path = project_root_path / config.output.location / relative_to_project.with_suffix('.ts')
+            return str(mirror_path)
         except ValueError:
+            # Fallback if file is outside project
             return str(py_file_path.with_suffix('.ts'))
     else:
-        raise ValueError(f"Unknown strategy: {strategy}")
+        raise ValueError(f"Unknown strategy: {config.output.strategy}")
 
 
-def _generate_fluidkit_runtime() -> str:
-    """Generate the FluidKit TypeScript runtime template."""
-    return '''/**
+def _get_runtime_file_path(config: FluidKitConfig, project_root: str) -> str:
+    """Get the runtime.ts file path based on configuration."""
+    runtime_dir = Path(project_root) / config.output.location
+    return str(runtime_dir / "runtime.ts")
+
+
+def _generate_fluidkit_runtime(config: FluidKitConfig) -> str:
+    """Generate environment-aware FluidKit TypeScript runtime."""
+    
+    # Generate getBaseUrl function based on flow type
+    if config.is_fullstack_config:
+        base_url_fn = _generate_framework_aware_base_url(config)
+    else:
+        base_url_fn = _generate_normal_flow_base_url(config)
+    
+    return f'''/**
  * FluidKit Runtime Utilities
  * Auto-generated TypeScript utilities for FluidKit fetch wrappers
  */
 
-export interface ApiResult<T = any> {
+export interface ApiResult<T = any> {{
   data?: T;
   error?: string;
   status: number;
   success: boolean;
-}
+}}
 
-export function getBaseUrl(): string {
-  if (typeof window !== 'undefined') {
-    return '/api';
-  }
-  return process.env.FASTAPI_URL || 'http://localhost:8000';
-}
+{base_url_fn}
 
-export async function handleResponse<T = any>(response: Response): Promise<ApiResult<T>> {
+export async function handleResponse<T = any>(response: Response): Promise<ApiResult<T>> {{
   const status = response.status;
   const success = response.ok;
   
-  if (!success) {
+  if (!success) {{
     let error: string;
-    try {
+    try {{
       const errorBody = await response.json();
       error = errorBody.detail || errorBody.message || response.statusText;
-    } catch {
-      error = response.statusText || `HTTP ${status}`;
-    }
-    return { error, status, success: false };
-  }
+    }} catch {{
+      error = response.statusText || `HTTP ${{status}}`;
+    }}
+    return {{ error, status, success: false }};
+  }}
   
-  try {
+  try {{
     const responseData = await response.json();
-    return { data: responseData, status, success: true };
-  } catch (e) {
-    return { 
+    return {{ data: responseData, status, success: true }};
+  }} catch (e) {{
+    return {{ 
       error: 'Failed to parse response JSON', 
       status, 
       success: false 
-    };
-  }
-}'''
+    }};
+  }}
+}}'''
 
-# === INTEGRATION WITH APP_INTEGRATOR === #
 
-def integrate_with_generation(app, strategy: str = "mirror", **options):
-    """
-    Enhanced integrate function that includes TypeScript generation.
+def _generate_framework_aware_base_url(config: FluidKitConfig) -> str:
+    """Generate getBaseUrl for framework flow with environment awareness."""
+    dev_env = config.get_environment("development")
+    prod_env = config.get_environment("production")
     
-    Uses current working directory as project root.
-    """
-    from fluidkit.core.integrator import integrate
-    
-    # Step 1: Perform FluidKit introspection (pass None to use auto-detection)
-    fluid_app = integrate(app, project_root=None, **options)
-    
-    # Step 2: Generate TypeScript files
-    generated_files = generate_typescript_files(
-        fluid_app=fluid_app,
-        strategy=strategy,
-        **options
+    # Check if we need client/server detection
+    has_unified_mode = any(
+        env.mode == "unified" 
+        for env in config.environments.values()
     )
     
-    # Step 3: Print generation summary
-    project_root = Path.cwd()
-    print(f"\n=== TYPESCRIPT GENERATION COMPLETE ===")
-    print(f"Strategy: {strategy}")
-    print(f"Project root: {project_root}")
-    print(f"Generated {len(generated_files)} TypeScript files:")
-    
-    for file_path in sorted(generated_files.keys()):
-        try:
-            relative_path = Path(file_path).relative_to(project_root)
-        except ValueError:
-            relative_path = Path(file_path)  # Fallback to absolute
-        
-        content = generated_files[file_path]
-        lines_count = len(content.splitlines())
-        print(f"  📄 {relative_path} ({lines_count} lines)")
-    
-    return fluid_app, generated_files
+    if has_unified_mode:
+        # Framework flow with proxy detection
+        return f'''export function getBaseUrl(): string {{
+  // Detect if running in browser (client) vs server
+  if (typeof window !== 'undefined') {{
+    // Browser environment - use proxy routes
+    return '{dev_env.apiUrl}';
+  }}
+  
+  // Server environment - direct communication
+  return 'http://{config.backend.host}:{config.backend.port}';
+}}'''
+    else:
+        # Framework flow but all separate mode
+        return f'''export function getBaseUrl(): string {{
+  // Production build - direct communication
+  return '{prod_env.apiUrl}';
+}}'''
 
 
-# === TESTING FUNCTION === #
-
-def test_with_examples():
-    """Test the complete pipeline with examples in v2/examples directory"""
-    import sys
-    from pathlib import Path
+def _generate_normal_flow_base_url(config: FluidKitConfig) -> str:
+    """Generate getBaseUrl for normal flow (simple URL switching)."""
+    dev_env = config.get_environment("development")
+    prod_env = config.get_environment("production")
     
+    return f'''export function getBaseUrl(): string {{
+  // Simple development/production URL switching
+  // Update this for production builds
+  return '{dev_env.apiUrl}';
+}}'''
+
+
+def _generate_proxy_files(config: FluidKitConfig, project_root: str) -> Dict[str, str]:
+    """Generate framework-specific proxy files for unified mode."""
+    proxy_files = {}
+    
+    # Only generate proxy for environments that use unified mode
+    for env_name, env_config in config.environments.items():
+        if env_config.mode == "unified":
+            if config.framework == "sveltekit":
+                proxy_files.update(_generate_sveltekit_proxy(env_config, project_root, config))
+            elif config.framework == "nextjs":
+                proxy_files.update(_generate_nextjs_proxy(env_config, project_root, config))
+            # Add other frameworks as needed
+    
+    return proxy_files
+
+
+def _generate_sveltekit_proxy(env_config, project_root: str, config: FluidKitConfig) -> Dict[str, str]:
+    """Generate SvelteKit API proxy route."""
+    # Extract API path from URL (e.g., "/api" -> "api")
+    api_path = env_config.apiUrl.lstrip('/')
+    
+    # Generate proxy route path
+    proxy_route_path = Path(project_root) / "src" / "routes" / api_path / "[...path]" / "+server.ts"
+    
+    proxy_content = f'''import type {{ RequestHandler }} from './$types';
+
+const FASTAPI_URL = 'http://{config.backend.host}:{config.backend.port}';
+
+export const GET: RequestHandler = async ({{ params, url, request }}) => {{
+  const apiPath = params.path;
+  const searchParams = url.searchParams.toString();
+  const fullUrl = `${{FASTAPI_URL}}/${{apiPath}}${{searchParams ? `?${{searchParams}}` : ''}}`;
+  
+  const response = await fetch(fullUrl, {{
+    method: 'GET',
+    headers: {{
+      'content-type': request.headers.get('content-type') || '',
+      'authorization': request.headers.get('authorization') || '',
+    }}
+  }});
+  
+  return response;
+}};
+
+export const POST: RequestHandler = async ({{ params, request }}) => {{
+  const apiPath = params.path;
+  const fullUrl = `${{FASTAPI_URL}}/${{apiPath}}`;
+  
+  const response = await fetch(fullUrl, {{
+    method: 'POST',
+    headers: {{
+      'content-type': request.headers.get('content-type') || '',
+      'authorization': request.headers.get('authorization') || '',
+    }},
+    body: await request.text()
+  }});
+  
+  return response;
+}};
+
+export const PUT: RequestHandler = async ({{ params, request }}) => {{
+  const apiPath = params.path;
+  const fullUrl = `${{FASTAPI_URL}}/${{apiPath}}`;
+  
+  const response = await fetch(fullUrl, {{
+    method: 'PUT',
+    headers: {{
+      'content-type': request.headers.get('content-type') || '',
+      'authorization': request.headers.get('authorization') || '',
+    }},
+    body: await request.text()
+  }});
+  
+  return response;
+}};
+
+export const DELETE: RequestHandler = async ({{ params, request }}) => {{
+  const apiPath = params.path;
+  const fullUrl = `${{FASTAPI_URL}}/${{apiPath}}`;
+  
+  const response = await fetch(fullUrl, {{
+    method: 'DELETE',
+    headers: {{
+      'content-type': request.headers.get('content-type') || '',
+      'authorization': request.headers.get('authorization') || '',
+    }}
+  }});
+  
+  return response;
+}};
+
+export const PATCH: RequestHandler = async ({{ params, request }}) => {{
+  const apiPath = params.path;
+  const fullUrl = `${{FASTAPI_URL}}/${{apiPath}}`;
+  
+  const response = await fetch(fullUrl, {{
+    method: 'PATCH',
+    headers: {{
+      'content-type': request.headers.get('content-type') || '',
+      'authorization': request.headers.get('authorization') || '',
+    }},
+    body: await request.text()
+  }});
+  
+  return response;
+}};'''
+
+    return {str(proxy_route_path): proxy_content}
+
+
+def _generate_nextjs_proxy(env_config, project_root: str, config: FluidKitConfig) -> Dict[str, str]:
+    """Generate Next.js API proxy route."""
+    # Extract API path from URL
+    api_path = env_config.apiUrl.lstrip('/')
+    
+    # Generate proxy route path for Next.js App Router
+    proxy_route_path = Path(project_root) / "app" / api_path / "[...path]" / "route.ts"
+    
+    proxy_content = f'''import {{ NextRequest }} from 'next/server';
+
+const FASTAPI_URL = 'http://{config.backend.host}:{config.backend.port}';
+
+export async function GET(request: NextRequest, {{ params }}: {{ params: {{ path: string[] }} }}) {{
+  const apiPath = params.path.join('/');
+  const searchParams = request.nextUrl.searchParams.toString();
+  const fullUrl = `${{FASTAPI_URL}}/${{apiPath}}${{searchParams ? `?${{searchParams}}` : ''}}`;
+  
+  const response = await fetch(fullUrl, {{
+    method: 'GET',
+    headers: {{
+      'content-type': request.headers.get('content-type') || '',
+      'authorization': request.headers.get('authorization') || '',
+    }}
+  }});
+  
+  return response;
+}}
+
+export async function POST(request: NextRequest, {{ params }}: {{ params: {{ path: string[] }} }}) {{
+  const apiPath = params.path.join('/');
+  const fullUrl = `${{FASTAPI_URL}}/${{apiPath}}`;
+  
+  const response = await fetch(fullUrl, {{
+    method: 'POST',
+    headers: {{
+      'content-type': request.headers.get('content-type') || '',
+      'authorization': request.headers.get('authorization') || '',
+    }},
+    body: await request.text()
+  }});
+  
+  return response;
+}}
+
+export async function PUT(request: NextRequest, {{ params }}: {{ params: {{ path: string[] }} }}) {{
+  const apiPath = params.path.join('/');
+  const fullUrl = `${{FASTAPI_URL}}/${{apiPath}}`;
+  
+  const response = await fetch(fullUrl, {{
+    method: 'PUT',
+    headers: {{
+      'content-type': request.headers.get('content-type') || '',
+      'authorization': request.headers.get('authorization') || '',
+    }},
+    body: await request.text()
+  }});
+  
+  return response;
+}}
+
+export async function DELETE(request: NextRequest, {{ params }}: {{ params: {{ path: string[] }} }}) {{
+  const apiPath = params.path.join('/');
+  const fullUrl = `${{FASTAPI_URL}}/${{apiPath}}`;
+  
+  const response = await fetch(fullUrl, {{
+    method: 'DELETE',
+    headers: {{
+      'content-type': request.headers.get('content-type') || '',
+      'authorization': request.headers.get('authorization') || '',
+    }}
+  }});
+  
+  return response;
+}}
+
+export async function PATCH(request: NextRequest, {{ params }}: {{ params: {{ path: string[] }} }}) {{
+  const apiPath = params.path.join('/');
+  const fullUrl = `${{FASTAPI_URL}}/${{apiPath}}`;
+  
+  const response = await fetch(fullUrl, {{
+    method: 'PATCH',
+    headers: {{
+      'content-type': request.headers.get('content-type') || '',
+      'authorization': request.headers.get('authorization') || '',
+    }},
+    body: await request.text()
+  }});
+  
+  return response;
+}}'''
+
+    return {str(proxy_route_path): proxy_content}
+
+
+# === TESTING HELPERS === #
+
+def test_config_driven_generation():
+    """Test the config-driven generation pipeline."""
     try:
-        # Import the test FastAPI app from v2/examples
         from tests.sample.app import app
+        from fluidkit.core.integrator import integrate
         
-        print("=== TESTING COMPLETE PIPELINE ===")
-        print(f"Working directory: {Path.cwd()}")
+        print("=== TESTING CONFIG-DRIVEN GENERATION ===")
         
-        # Test both strategies
-        for strategy in ["co-locate", "mirror"]:
-            print(f"\n--- Testing {strategy.upper()} Strategy ---")
-            
-            fluid_app, generated_files = integrate_with_generation(
-                app=app,
-                strategy=strategy
-            )
-            
-            # Show preview of generated content
-            print(f"\n📋 Content Preview for {strategy}:")
-            for file_path, content in generated_files.items():
-                try:
-                    relative_path = Path(file_path).relative_to(Path.cwd())
-                except ValueError:
-                    relative_path = Path(file_path)
-                
-                print(f"\n--- {relative_path} ---")
-                
-                # Show first 10 lines of each file
-                lines = content.splitlines()
-                for i, line in enumerate(lines[:10]):
-                    print(f"{i+1:2d}: {line}")
-                if len(lines) > 10:
-                    print(f"    ... ({len(lines)-10} more lines)")
+        # Test normal flow
+        print("\n1. Testing normal flow generation:")
+        fluid_app, files = integrate(app)
         
-    except ImportError as e:
-        print(f"❌ Failed to import examples: {e}")
-        print("Please ensure v2/examples/test.py and v2/examples/schema.py exist")
-        print(f"Current directory: {Path.cwd()}")
-        print("Looking for: v2.examples.test")
+        print(f"Generated {len(files)} files:")
+        for file_path in sorted(files.keys()):
+            print(f"  📄 {Path(file_path).name}")
+        
+        # Test runtime content
+        runtime_files = [f for f in files.keys() if 'runtime.ts' in f]
+        if runtime_files:
+            print("\n2. Runtime content preview:")
+            runtime_content = files[runtime_files[0]]
+            lines = runtime_content.split('\n')
+            for i, line in enumerate(lines[:15]):
+                print(f"   {i+1:2d}: {line}")
+            if len(lines) > 15:
+                print(f"       ... ({len(lines)-15} more lines)")
+        
+        print("\n✅ Config-driven generation test passed!")
+        
+    except ImportError:
+        print("❌ Could not import test app")
     except Exception as e:
         print(f"❌ Test failed: {e}")
         import traceback
@@ -303,4 +525,4 @@ def test_with_examples():
 
 
 if __name__ == "__main__":
-    test_with_examples()
+    test_config_driven_generation()

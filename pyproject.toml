@@ -5,29 +5,36 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "fluidkit"
 version = "2.0.0"
-description = "Automatic TypeScript client generation for FastAPI through runtime introspection"
+description = "Full-stack Python framework with automatic TypeScript client generation for FastAPI"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
     {name = "Aswanth Manoj", email = "aswanthmanoj51@gmail.com"},
 ]
-keywords = ["fastapi", "typescript", "code-generation", "full-stack", "type-safety", "sveltekit", "nextjs", "nuxtjs"]
+keywords = [
+    "fastapi", "typescript", "full-stack", "sveltekit", "nextjs", "nuxtjs",
+    "code-generation", "type-safety", "python", "web-framework", "meta-framework"
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.11", 
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Code Generators",
     "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
 ]
 
-dependencies = []
+dependencies = [
+    "fastapi[standard]>=0.115.14",
+    "pydantic-extra-types>=2.10.5",
+    "pydantic[email]>=2.11.7",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -35,14 +42,19 @@ dev = [
     "pydantic-extra-types>=2.10.5",
     "pydantic[email]>=2.11.7",
 ]
+cli = [
+    "click>=8.0.0",
+    "rich>=10.0.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/AswanthManoj/Fluidkit"
 Repository = "https://github.com/AswanthManoj/Fluidkit"
 Issues = "https://github.com/AswanthManoj/Fluidkit/issues"
+Documentation = "https://github.com/AswanthManoj/Fluidkit#readme"
 
 [tool.setuptools.packages.find]
 include = ["fluidkit*"]
 
 [tool.setuptools.package-data]
-fluidkit = ["runtimes/**/*.ts", "runtimes/**/*.js", "runtimes/**/*.py"]
+fluidkit = ["templates/**/*", "runtimes/**/*.ts", "runtimes/**/*.js", "runtimes/**/*.py"]
