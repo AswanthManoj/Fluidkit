@@ -31,9 +31,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "fastapi[standard]>=0.115.14",
-    "pydantic-extra-types>=2.10.5",
-    "pydantic[email]>=2.11.7",
+    "uv>=0.7.19",
 ]
 
 [project.optional-dependencies]
@@ -53,8 +51,16 @@ Repository = "https://github.com/AswanthManoj/Fluidkit"
 Issues = "https://github.com/AswanthManoj/Fluidkit/issues"
 Documentation = "https://github.com/AswanthManoj/Fluidkit#readme"
 
+[project.scripts]
+fluidkit = "fluidkit.cli.main:main"
+
 [tool.setuptools.packages.find]
 include = ["fluidkit*"]
 
 [tool.setuptools.package-data]
 fluidkit = ["templates/**/*", "runtimes/**/*.ts", "runtimes/**/*.js", "runtimes/**/*.py"]
+
+[tool.uv.workspace]
+members = [
+    "my-test-app",
+]
