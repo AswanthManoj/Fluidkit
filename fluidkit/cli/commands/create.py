@@ -89,7 +89,7 @@ class CreateCommand:
         print("🎨 Creating SvelteKit project...")
         
         # Always use minimal template
-        command = ["npx", "sv", "create", project_name, "--template", "minimal"]
+        command = ["npx", "sv", "create", project_name, "--template", "minimal", "--types", "ts"]
         
         print(f"  📦 Running: {' '.join(command)}")
         
