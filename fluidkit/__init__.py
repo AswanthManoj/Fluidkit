@@ -1,48 +1,47 @@
-"""
-FluidKit - Automatic TypeScript client code generation for FastAPI
-"""
+import logging
+from fluidkit.registry import fluidkit_registry
+from fluidkit.types import RequestEvent, FileUpload
+from fluidkit.exceptions import HTTPError, Redirect, error
+from fluidkit.decorators import query, form, command, prerender
 
-def _check_dependencies():
-    """Check for required dependencies"""
-    missing = []
+
+app = fluidkit_registry.app
+logger = logging.getLogger(__name__)
+
+
+def run(host: str = "0.0.0.0", port: int = 8000, dev: bool = False, watch_pattern: str = "src/**/*.py", schema_output: str = "src/lib/fluidkit"):
+    fluidkit_registry.configure(dev=dev, host=host, port=port, schema_output=schema_output)
     
-    try:
-        import fastapi
-    except ImportError:
-        missing.append("fastapi")
-    
-    try:
-        import pydantic
-    except ImportError:
-        missing.append("pydantic")
-    
-    if missing:
-        deps = " and ".join(missing)
-        raise ImportError(
-            f"FluidKit requires {deps} to be installed.\n"
-            f"Install with: pip install {' '.join(missing)}\n"
-            f"FluidKit works with your existing {deps} versions."
-        )
+    if dev:
+        import jurigged
+        from fluidkit import hmr
+        from fluidkit.codegen import watch as codegen_watch
 
-# Check dependencies on import
-_check_dependencies()
+        codegen_watch(fluidkit_registry)
 
-# Import main API only after dependency check
-from .core.config import get_version
-from .core.schema import LanguageType
-from .core.integrator import integrate, introspect_only, generate_only
+        watcher = jurigged.watch(pattern=watch_pattern)
+        hmr.setup(watcher)
 
-__version__ = get_version()
+        for metadata in fluidkit_registry.functions.values():
+            hmr.attach_conform(metadata)
+
+        logger.info("[fluidkit] dev mode")
+
+    import uvicorn
+    uvicorn.run(app, host=host, port=port)
+
+
 
 __all__ = [
-    # Main functions
-    'integrate',
-    'introspect_only', 
-    'generate_only',
-    
-    # Enums
-    'LanguageType',
-    
-    # Version
-    '__version__'
+    'app',
+    'run',
+    'query',
+    'command',
+    'form',
+    'prerender',
+    'error',
+    'HTTPError',
+    'Redirect',
+    'RequestEvent',
+    'FileUpload',
 ]
