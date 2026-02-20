@@ -56,8 +56,8 @@ class FluidKitRegistry:
         self.functions[key] = metadata
         self._route_handlers[key] = handler
         self._register_route(metadata, handler)
-        # TODO: Need to work out so in non dev conditions this doesn't fire
-        self._fire_on_register(metadata)
+        if self._on_register_callback:
+            self._fire_on_register(metadata)
 
 
     def _register_route(self, metadata: FunctionMetadata, handler: Callable):

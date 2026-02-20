@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 DEFAULT_CONFIG = {
-    "entry": "src/main.py",
+    "entry": "src/app.py",
     "host": "0.0.0.0",
     "backend_port": 8000,
     "frontend_port": 5173,

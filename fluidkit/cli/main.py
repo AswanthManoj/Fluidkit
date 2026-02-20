@@ -2,7 +2,7 @@ import typer
 from .config import load_config
 from .scaffold import scaffold_project
 from .process import run_dev, run_build
-from .patch import patch_svelte_config, patch_vite_config
+from .patch import patch_svelte_config, patch_vite_config, check_svelte_experimental
 
 
 app = typer.Typer(help="FluidKit CLI")
@@ -24,6 +24,7 @@ def dev(
     config = load_config({"host": host, "backend_port": backend_port, "frontend_port": frontend_port})
     patch_svelte_config(schema_output=config["schema_output"])
     patch_vite_config(frontend_port=config["frontend_port"])
+    check_svelte_experimental()
     run_dev(config)
 
 
@@ -35,6 +36,7 @@ def build(
     config = load_config({"backend_port": backend_port})
     patch_svelte_config(schema_output=config["schema_output"])
     patch_vite_config(frontend_port=config["frontend_port"])
+    check_svelte_experimental()
     run_build(config)
 
 

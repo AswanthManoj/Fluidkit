@@ -105,3 +105,56 @@ def patch_vite_config(project_root: str = ".", frontend_port: int = 5173) -> boo
         return True
 
     return False
+
+
+# def patch_svelte_experimental(project_root: str = ".") -> bool:
+#     import json
+#     try:
+#         from nodejs_wheel import node
+#     except ImportError:
+#         return False
+
+#     script = """
+# import { loadFile, writeFile } from 'magicast';
+# import { deepMergeObject } from 'magicast';
+# const mod = await loadFile('svelte.config.js');
+# deepMergeObject(mod.exports.default, {
+#   kit: { experimental: { remoteFunctions: true } },
+#   compilerOptions: { experimental: { async: true } }
+# });
+# await writeFile(mod, 'svelte.config.js');
+# console.log(JSON.stringify({ok:true}));
+# """
+#     result = node(
+#         ["--input-type=module", "-e", script],
+#         return_completed_process=True,
+#         capture_output=True,
+#         cwd=project_root,
+#     )
+#     try:
+#         return json.loads(result.stdout).get("ok", False)
+#     except (json.JSONDecodeError, AttributeError):
+#         return False
+
+
+def check_svelte_experimental(project_root: str = ".") -> None:
+    for name in ("svelte.config.js", "svelte.config.ts"):
+        config_path = Path(project_root) / name
+        if config_path.exists():
+            break
+    else:
+        return
+
+    original = config_path.read_text(encoding="utf-8")
+    missing = []
+    if "remoteFunctions" not in original:
+        missing.append("kit.experimental.remoteFunctions: true")
+    if re.search(r'compilerOptions', original) is None or "async" not in original:
+        missing.append("compilerOptions.experimental.async: true")
+
+    if missing:
+        import typer
+        typer.echo(
+            typer.style("  [fluid]", fg=typer.colors.BRIGHT_YELLOW, bold=True)
+            + " svelte.config missing: " + ", ".join(missing)
+        )
