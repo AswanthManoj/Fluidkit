@@ -44,7 +44,7 @@ class RemoteFunction:
         self._func = new_func
 
         if old_params != new_params:
-            logger.debug("[fluidkit] %s signature updated", self._name)
+            logger.debug("[fluid] %s signature updated", self._name)
             from fluidkit.registry import fluidkit_registry
             fluidkit_registry._fire_on_register(self._metadata)
 

@@ -126,6 +126,13 @@ def setup_request_context(request: Request, allow_set_cookies: bool):
     
     return request_event, cookies, token
 
+def generate_route_path(metadata: FunctionMetadata) -> str:
+    module = metadata.module
+    if module == '__main__':
+        return f"/remote/{metadata.name}"
+    module_path = module.replace('.', '/')
+    return f"/remote/{module_path}/{metadata.name}"
+
 def build_json_response(response_data: QueryResponse|CommandResponse|RedirectResponse, cookies: Cookies):
     """Build JSONResponse with cookies applied"""
     response = JSONResponse(content=response_data.model_dump(by_alias=True))

@@ -4,9 +4,10 @@ import uvicorn
 import jurigged
 from pathlib import Path
 from fluidkit import app
-from fluidkit.registry import fluidkit_registry
-from fluidkit.models import FunctionMetadata, FieldAnnotation
 from fluidkit.codegen import build_schema_ts
+from fluidkit.registry import fluidkit_registry
+from fluidkit.utilities import generate_route_path
+from fluidkit.models import FunctionMetadata, FieldAnnotation
 from fluidkit.codegen.remote import generate_remote_files
 
 
@@ -152,7 +153,7 @@ def _install_register_patch():
         # Clean by path before registering — prevents duplicate operation IDs
         # when decorator type changes (@query -> @command) because the route
         # name changes but the path stays the same
-        path = fluidkit_registry._generate_route_path(metadata)
+        path = generate_route_path(metadata)
         app.router.routes = [
             r for r in app.router.routes
             if getattr(r, 'path', None) != path
@@ -195,5 +196,5 @@ if __name__ == "__main__":
     watcher = jurigged.watch()
     watcher.prerun.register(_on_prerun)
     watcher.postrun.register(_on_postrun)
-    print("[fluidkit] watching")
+    print("[fluid] watching")
     uvicorn.run(app, host="0.0.0.0", port=8000)

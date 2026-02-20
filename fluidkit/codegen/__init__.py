@@ -60,24 +60,28 @@ def build_schema_ts(functions: list[FunctionMetadata]) -> str:
     return w.render()
 
 
-def _run_codegen(metadata: FunctionMetadata, registry):
+def _run_codegen(metadata: FunctionMetadata, registry, base_url: str, schema_output: str):
     if metadata.file_path:
         functions_for_file = {
             k: v for k, v in registry.functions.items()
             if v.file_path == metadata.file_path
         }
-        generate_remote_files(functions_for_file, base_url=registry.base_url)
+        if not functions_for_file:
+            remote_ts = Path(metadata.file_path.replace(".py", ".remote.ts"))
+            remote_ts.unlink(missing_ok=True)
+        else:
+            generate_remote_files(functions_for_file, base_url=base_url)
 
     if _has_custom_types(metadata):
         schema_ts = build_schema_ts(list(registry.functions.values()))
-        schema_path = Path(registry.schema_output) / "schema.ts"
+        schema_path = Path(schema_output) / "schema.ts"
         schema_path.parent.mkdir(parents=True, exist_ok=True)
         schema_path.write_text(schema_ts, encoding="utf-8")
 
 
-def watch(registry):
+def watch(registry, base_url: str, schema_output: str):
     def _on_register(metadata: FunctionMetadata):
-        _run_codegen(metadata, registry)
+        _run_codegen(metadata, registry, base_url, schema_output)
     registry.on_register(_on_register)
 
 

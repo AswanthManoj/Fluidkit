@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 from typing import Dict, List, Set
-from fluidkit.registry import fluidkit_registry
+from fluidkit.utilities import generate_route_path
 from fluidkit.codegen.ts import GENERATED_FILE_WARNING, TSWriter, annotation_to_ts, module_to_namespace
 from fluidkit.models import FunctionMetadata, DecoratorType, ParameterMetadata, FieldAnnotation, BaseType, ContainerType
 
@@ -161,7 +161,7 @@ def _render_mutations_block(w: TSWriter) -> None:
 # =============================================================================
 
 def _render_query(w: TSWriter, fn: FunctionMetadata) -> None:
-    route = fluidkit_registry._generate_route_path(fn)
+    route = generate_route_path(fn)
     return_type = annotation_to_ts(fn.return_annotation)
     signature = (
         f"export const {fn.name} = query('unchecked', async ({_ts_params(fn.parameters)}) => {{"
@@ -182,7 +182,7 @@ def _render_query(w: TSWriter, fn: FunctionMetadata) -> None:
 
 
 def _render_prerender(w: TSWriter, fn: FunctionMetadata) -> None:
-    route = fluidkit_registry._generate_route_path(fn)
+    route = generate_route_path(fn)
     return_type = annotation_to_ts(fn.return_annotation)
     signature = (
         f"export const {fn.name} = prerender('unchecked', async ({_ts_params(fn.parameters)}) => {{"
@@ -229,7 +229,7 @@ def _render_prerender(w: TSWriter, fn: FunctionMetadata) -> None:
 
 
 def _render_command(w: TSWriter, fn: FunctionMetadata) -> None:
-    route = fluidkit_registry._generate_route_path(fn)
+    route = generate_route_path(fn)
     return_type = annotation_to_ts(fn.return_annotation)
 
     with w.block(f"export const {fn.name} = command('unchecked', async ({_ts_params(fn.parameters)}) => {{", "});"):
@@ -248,7 +248,7 @@ def _render_command(w: TSWriter, fn: FunctionMetadata) -> None:
 
 
 def _render_form(w: TSWriter, fn: FunctionMetadata) -> None:
-    route = fluidkit_registry._generate_route_path(fn)
+    route = generate_route_path(fn)
     return_type = annotation_to_ts(fn.return_annotation)
 
     with w.block(f"export const {fn.name} = form('unchecked', async (data) => {{", "});"):
