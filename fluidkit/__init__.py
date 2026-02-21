@@ -1,48 +1,29 @@
-"""
-FluidKit - Automatic TypeScript client code generation for FastAPI
-"""
+from importlib.metadata import version
+from fluidkit.context import get_request_event
+from fluidkit.registry import fluidkit_registry
+from fluidkit.types import RequestEvent, FileUpload
+from fluidkit.exceptions import HTTPError, Redirect, error
+from fluidkit.decorators import query, form, command, prerender
 
-def _check_dependencies():
-    """Check for required dependencies"""
-    missing = []
-    
-    try:
-        import fastapi
-    except ImportError:
-        missing.append("fastapi")
-    
-    try:
-        import pydantic
-    except ImportError:
-        missing.append("pydantic")
-    
-    if missing:
-        deps = " and ".join(missing)
-        raise ImportError(
-            f"FluidKit requires {deps} to be installed.\n"
-            f"Install with: pip install {' '.join(missing)}\n"
-            f"FluidKit works with your existing {deps} versions."
-        )
 
-# Check dependencies on import
-_check_dependencies()
+__version__ = version("fluidkit")
 
-# Import main API only after dependency check
-from .core.config import get_version
-from .core.schema import LanguageType
-from .core.integrator import integrate, introspect_only, generate_only
 
-__version__ = get_version()
+app = fluidkit_registry.app
+
 
 __all__ = [
-    # Main functions
-    'integrate',
-    'introspect_only', 
-    'generate_only',
-    
-    # Enums
-    'LanguageType',
-    
-    # Version
-    '__version__'
+    'app',
+
+    'form',
+    'query',
+    'command',
+    'prerender',
+
+    'error',
+    'Redirect',
+    'HTTPError',
+    'FileUpload',
+    'RequestEvent',
+    'get_request_event',
 ]

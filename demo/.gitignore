@@ -32,13 +32,3 @@ vite.config.ts.timestamp-*
 # OS
 .DS_Store
 Thumbs.db
-
-
-# Custom ignore
-.fluidkit/
-fluid.config.json
-my-test-app
-src/
-sse.md
-doc.py
-project_docs.md

@@ -1,0 +1,8 @@
+{
+  "entry": "src/app.py",
+  "host": "0.0.0.0",
+  "backend_port": 8000,
+  "frontend_port": 5173,
+  "schema_output": "src/lib/fluidkit",
+  "watch_pattern": "./*.py"
+}
