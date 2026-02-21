@@ -22,31 +22,72 @@ pip install fluidkit
 Decorate Python functions. FluidKit registers them as FastAPI endpoints internally and generates colocated `.remote.ts` files that SvelteKit imports as [remote functions](https://svelte.dev/docs/kit/remote-functions) directly.
 
 ```python
-# src/posts/data.py
-from fluidkit import query, command
+# src/lib/demo.py
+from fluidkit import query, command, form
+
+db = {
+    "posts": [
+        {"id": 1, "title": "Hello World", "content": "This is the first post.", "likes": 10},
+        {"id": 2, "title": "Fluidkit", "content": "Fluidkit is awesome!", "likes": 50},
+        {"id": 3, "title": "Python and Svelte", "content": "Using Python with Svelte is great!", "likes": 25},
+    ]
+}
 
 @query
-async def get_posts() -> list[Post]:
-    return await db.all(Post)
+async def get_posts():
+    return db["posts"]
 
 @command
-async def delete_post(post_id: str) -> None:
-    await db.delete(Post, post_id)
-    await get_posts().refresh()  # invalidates client cache in the same request with single flight mutations
+async def like_post(post_id: int):
+    for post in db["posts"]:
+        if post["id"] == post_id:
+            post["likes"] += 1
+
+            # invalidates client cache in the same request with single flight mutations
+            await get_posts().refresh()
+            return True
+    return None
+
+@form
+async def add_post(title: str, content: str):
+    new_post = {
+        "id": len(db["posts"]) + 1,
+        "title": title,
+        "content": content,
+        "likes": 0,
+    }
+    db["posts"].append(new_post)
+
+    await get_posts().refresh() # invalidates client cache in the same request with single flight mutations
 ```
 ```typescript
-// src/routes/+page.server.ts
-import { getPosts, deletePost } from './posts/data.remote';
+<!-- src/routes/+page.svelte -->
+<script>
+    import { get_posts, like_post, add_post } from '$lib/demo.remote';
+</script>
 
-export const load = async () => ({ posts: await getPosts() });
-export const actions = { delete: async ({ request }) => deletePost(...) };
+<form {...add_post}>
+  <input {...add_post.fields.title.as('text')} placeholder="Title" />
+  <input {...add_post.fields.content.as('text')} placeholder="Content" />
+  <button>Add Post</button>
+</form>
+
+{#each await get_posts() as post}
+  <div>
+    <h2>{post.title}</h2>
+    <p>{post.content}</p>
+    <button onclick={async () => await like_post(post.id)}>
+      👍 {post.likes}
+    </button>
+  </div>
+{/each}
 ```
 
 No manual fetch calls. No duplicated types. No glue code.
 
 <details>
 <summary><b>🤫 how does this work?</b></summary>
-FluidKit reflects on your decorated functions at import time — inspecting parameters, return types, and Pydantic models — and generates colocated `.remote.ts` files wrapping each function in a SvelteKit-native `query`, `command`, `form`, or `prerender` call. In dev mode this re-runs on every save via HMR. The generated files are real TypeScript you can inspect, import, and version control.
+FluidKit reflects on your decorated functions at import time — inspecting parameters, return types, and Pydantic models — and generates colocated `.remote.ts` files wrapping each function in a SvelteKit-native `query`, `command`, `form`, or `prerender` remote function call. In dev mode this re-runs on every save via HMR. The generated files are real TypeScript you can inspect, import, and version control.
 </details>
 
 

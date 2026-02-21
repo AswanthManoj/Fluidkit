@@ -75,29 +75,22 @@
 			<svg viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 2l5 5h-5V4zM6 20V4h5v7h7v9H6z"/></svg>
 		</a>
 	</div>
+
+	<div class="scroll-hint">
+		<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+			<path d="M7 10l5 5 5-5"/>
+		</svg>
+	</div>
 </section>
 
 
 <style>
-	/* ── Layout ─────────────────────────────────── */
-	:global(body) { margin: 0; }
-
-	.page {
-		min-height: 100vh;
-		background: radial-gradient(ellipse at 50% 40%, #1c1917, #0c0a09 70%);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		font-family: 'Inter', system-ui, -apple-system, sans-serif;
-		overflow: hidden;
-	}
-
 	.hero {
 		display: flex;
 		flex-direction: column;
 		align-items: center;
 		gap: 3.5rem;
-		padding: 2rem;
+		padding: 4rem 2rem 1rem;
 	}
 
 	.logo-row {
@@ -452,5 +445,17 @@
 	.link-icon svg {
 		width: 16px;
 		height: 16px;
+	}
+
+	.scroll-hint {
+		color: #8f8984;
+		animation: bob 2s 4s ease-in-out infinite;
+		opacity: 0;
+		animation: fadeUp 1s 4s ease-out forwards, bob 2s 5s ease-in-out infinite;
+	}
+
+	@keyframes bob {
+		0%, 100% { transform: translateY(0); }
+		50% { transform: translateY(6px); }
 	}
 </style>

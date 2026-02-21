@@ -1,3 +1,4 @@
+import re
 import sys
 import typer
 import asyncio
@@ -11,6 +12,8 @@ from fluidkit.registry import fluidkit_registry
 class _FluidKitLogHandler(logging.Handler):
     def emit(self, record: logging.LogRecord):
         msg = self.format(record)
+        if re.search(r'" 2\d{2}', msg):
+            return
         if record.levelno >= logging.ERROR:
             color = typer.colors.BRIGHT_RED
         elif record.levelno >= logging.WARNING:
@@ -76,7 +79,19 @@ async def _dev_main(config: dict) -> None:
     def _jurigged_logger(op):
         if str(op).startswith("Watch"):
             return
-        typer.echo(typer.style("  [fluid] (hmr)", fg=typer.colors.BRIGHT_CYAN, bold=True) + f" {op}")
+        if str(op).startswith("Update"):
+            typer.echo(
+                typer.style("  [fluid] ", fg=typer.colors.BRIGHT_CYAN, bold=True)
+                + typer.style("(server) ", fg=typer.colors.Blu)
+                + typer.style("hmr update", fg=typer.colors.BRIGHT_GREEN)
+                + f" {op}"
+            )
+        else:
+            typer.echo(
+                typer.style("  [fluid] ", fg=typer.colors.BRIGHT_CYAN, bold=True) 
+                + typer.style("(server) ", fg=typer.colors.BLUE)
+                + f" {op}"
+            )
 
     watcher = jurigged.watch(
         logger=_jurigged_logger,
@@ -120,7 +135,7 @@ def run_dev(config: dict) -> None:
     display_host = "localhost" if config["host"] == "0.0.0.0" else config["host"]
     typer.echo(typer.style("\n  fluidkit v0.1.0\n", fg=typer.colors.BRIGHT_CYAN, bold=True))
     typer.echo("  → " + typer.style("[fluid]", fg=typer.colors.BRIGHT_CYAN, bold=True) + f"  http://{display_host}:{config['backend_port']}")
-    typer.echo("  → " + typer.style("[vite]    ", fg=typer.colors.BRIGHT_GREEN,  bold=True) + f"  http://localhost:{config['frontend_port']}\n")
+    typer.echo("  → " + typer.style("[vite] ", fg=typer.colors.BRIGHT_GREEN,  bold=True) + f"  http://localhost:{config['frontend_port']}\n")
     try:
         asyncio.run(_dev_main(config))
     except KeyboardInterrupt:

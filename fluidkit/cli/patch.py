@@ -1,5 +1,214 @@
 import re
+import json
 from pathlib import Path
+
+
+_EXPERIMENTAL_MERGE = {
+    "kit": {
+        "experimental": {
+            "remoteFunctions": True
+        }
+    },
+    "compilerOptions": {
+        "experimental": {
+            "async": True
+        }
+    }
+}
+
+
+_PATCH_SCRIPT = """\
+import fs from "fs";
+import {{ parse }} from "acorn";
+import {{ print }} from "esrap";
+import ts from "esrap/languages/ts";
+
+const MERGE = {merge};
+const src = fs.readFileSync({config_path}, "utf8");
+const ast = parse(src, {{ ecmaVersion: "latest", sourceType: "module" }});
+
+let configObj = null;
+const body = ast.body;
+const defaultExport = body.find(n => n.type === "ExportDefaultDeclaration");
+
+if (defaultExport?.declaration?.type === "ObjectExpression") {{
+  configObj = defaultExport.declaration;
+}} else if (defaultExport?.declaration?.type === "Identifier") {{
+  const name = defaultExport.declaration.name;
+  for (const node of body) {{
+    if (node.type !== "VariableDeclaration") continue;
+    for (const d of node.declarations) {{
+      if (d.id?.name === name && d.init?.type === "ObjectExpression") configObj = d.init;
+    }}
+  }}
+}}
+
+if (!configObj) throw new Error("Could not find config ObjectExpression");
+
+function toAst(val) {{
+  if (typeof val === "boolean") return {{ type: "Literal", value: val, raw: String(val) }};
+  if (typeof val === "string")  return {{ type: "Literal", value: val, raw: JSON.stringify(val) }};
+  if (typeof val === "number")  return {{ type: "Literal", value: val, raw: String(val) }};
+  if (val && typeof val === "object") {{
+    return {{
+      type: "ObjectExpression",
+      properties: Object.entries(val).map(([k, v]) => ({{
+        type: "Property", kind: "init", computed: false,
+        shorthand: false, method: false,
+        key: {{ type: "Identifier", name: k }},
+        value: toAst(v)
+      }}))
+    }};
+  }}
+  throw new Error("Unsupported type: " + typeof val);
+}}
+
+function findProp(objExpr, key) {{
+  return objExpr.properties.find(p => (p.key?.name ?? p.key?.value) === key);
+}}
+
+function mergeInto(objExpr, data) {{
+  for (const [key, value] of Object.entries(data)) {{
+    const existing = findProp(objExpr, key);
+    if (existing && typeof value === "object" && existing.value?.type === "ObjectExpression") {{
+      mergeInto(existing.value, value);
+    }} else if (existing) {{
+      existing.value = toAst(value);
+    }} else {{
+      objExpr.properties.push({{
+        type: "Property", kind: "init", computed: false,
+        shorthand: false, method: false,
+        key: {{ type: "Identifier", name: key }},
+        value: toAst(value)
+      }});
+    }}
+  }}
+}}
+
+mergeInto(configObj, MERGE);
+const {{ code }} = print(ast, ts());
+fs.writeFileSync({config_path}, code, "utf8");
+console.log(JSON.stringify({{ok: true}}));
+"""
+
+
+def _extract_adapter_comments(src: str) -> list[str] | None:
+    lines = src.splitlines()
+    for i, line in enumerate(lines):
+        if re.match(r'\s*adapter\s*:', line):
+            block = []
+            j = i - 1
+            while j >= 0 and lines[j].strip().startswith("//"):
+                block.insert(0, lines[j])
+                j -= 1
+            return block if block else None
+    return None
+
+
+def _extract_type_comment(src: str) -> str | None:
+    match = re.search(r'(/\*\*[^*]*\*+(?:[^/*][^*]*\*+)*/\s*\n)(?=\s*(?:const|let|var|export\s+default)\s)', src)
+    return match.group(1) if match else None
+
+
+def _reinsert_adapter_comments(src: str, block: list[str]) -> str:
+    lines = src.splitlines()
+    for i, line in enumerate(lines):
+        if re.match(r'\s*adapter\s*:', line):
+            indent = line[: len(line) - len(line.lstrip())]
+            indented = [indent + l.strip() for l in block]
+            lines = lines[:i] + indented + lines[i:]
+            break
+    return "\n".join(lines) + "\n"
+
+
+def _reinsert_type_comment(src: str, comment: str) -> str:
+    src = re.sub(r'\s*/\*\*[^*]*\*+(?:[^/*][^*]*\*+)*/\s*', '', src)
+    return re.sub(
+        r'\n+(?=(?:const|let|var|export\s+default)\s)',
+        '\n\n' + comment,
+        src,
+        count=1
+    )
+
+
+def patch_svelte_experimental(project_root: str = ".") -> bool:
+    try:
+        from nodejs_wheel import node
+    except ImportError:
+        return False
+
+    for name in ("svelte.config.js", "svelte.config.ts"):
+        config_path = Path(project_root) / name
+        if config_path.exists():
+            break
+    else:
+        return False
+
+    original_src = config_path.read_text(encoding="utf-8")
+    adapter_comments = _extract_adapter_comments(original_src)
+    type_comment = _extract_type_comment(original_src)
+
+    script = _PATCH_SCRIPT.format(
+        config_path=json.dumps(str(config_path.resolve()).replace("\\", "/")),
+        merge=json.dumps(_EXPERIMENTAL_MERGE, indent=2)
+    )
+
+    tmp = Path(project_root) / "_fluidkit_patch.mjs"
+    try:
+        tmp.write_text(script, encoding="utf-8")
+        result = node(
+            [str(tmp)],
+            cwd=str(Path(project_root).resolve()),
+            return_completed_process=True,
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            stderr = (result.stderr or b"").decode(errors="replace").strip()
+            if stderr:
+                import typer
+                typer.echo(
+                    typer.style("  [fluid]", fg=typer.colors.BRIGHT_YELLOW, bold=True)
+                    + f" experimental patch failed: {stderr}"
+                )
+            return False
+
+        patched_src = config_path.read_text(encoding="utf-8")
+        if adapter_comments:
+            patched_src = _reinsert_adapter_comments(patched_src, adapter_comments)
+            config_path.write_text(patched_src, encoding="utf-8")
+
+        if type_comment:
+            patched_src = _reinsert_type_comment(patched_src, type_comment)
+            config_path.write_text(patched_src, encoding="utf-8")
+
+        return json.loads(result.stdout).get("ok", False)
+    except (json.JSONDecodeError, AttributeError, OSError):
+        return False
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def check_svelte_experimental(project_root: str = ".") -> None:
+    for name in ("svelte.config.js", "svelte.config.ts"):
+        config_path = Path(project_root) / name
+        if config_path.exists():
+            break
+    else:
+        return
+
+    original = config_path.read_text(encoding="utf-8")
+    missing = []
+    if "remoteFunctions" not in original:
+        missing.append("kit.experimental.remoteFunctions: true")
+    if re.search(r'compilerOptions', original) is None or "async" not in original:
+        missing.append("compilerOptions.experimental.async: true")
+
+    if missing:
+        import typer
+        typer.echo(
+            typer.style("  [fluid]", fg=typer.colors.BRIGHT_YELLOW, bold=True)
+            + " svelte.config missing: " + ", ".join(missing)
+        )
 
 
 def patch_svelte_config(project_root: str = ".", schema_output: str = "src/lib/fluidkit") -> bool:
@@ -105,56 +314,3 @@ def patch_vite_config(project_root: str = ".", frontend_port: int = 5173) -> boo
         return True
 
     return False
-
-
-# def patch_svelte_experimental(project_root: str = ".") -> bool:
-#     import json
-#     try:
-#         from nodejs_wheel import node
-#     except ImportError:
-#         return False
-
-#     script = """
-# import { loadFile, writeFile } from 'magicast';
-# import { deepMergeObject } from 'magicast';
-# const mod = await loadFile('svelte.config.js');
-# deepMergeObject(mod.exports.default, {
-#   kit: { experimental: { remoteFunctions: true } },
-#   compilerOptions: { experimental: { async: true } }
-# });
-# await writeFile(mod, 'svelte.config.js');
-# console.log(JSON.stringify({ok:true}));
-# """
-#     result = node(
-#         ["--input-type=module", "-e", script],
-#         return_completed_process=True,
-#         capture_output=True,
-#         cwd=project_root,
-#     )
-#     try:
-#         return json.loads(result.stdout).get("ok", False)
-#     except (json.JSONDecodeError, AttributeError):
-#         return False
-
-
-def check_svelte_experimental(project_root: str = ".") -> None:
-    for name in ("svelte.config.js", "svelte.config.ts"):
-        config_path = Path(project_root) / name
-        if config_path.exists():
-            break
-    else:
-        return
-
-    original = config_path.read_text(encoding="utf-8")
-    missing = []
-    if "remoteFunctions" not in original:
-        missing.append("kit.experimental.remoteFunctions: true")
-    if re.search(r'compilerOptions', original) is None or "async" not in original:
-        missing.append("compilerOptions.experimental.async: true")
-
-    if missing:
-        import typer
-        typer.echo(
-            typer.style("  [fluid]", fg=typer.colors.BRIGHT_YELLOW, bold=True)
-            + " svelte.config missing: " + ", ".join(missing)
-        )

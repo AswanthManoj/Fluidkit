@@ -24,10 +24,8 @@ classifiers = [
 
 dependencies = [
     "fastapi[all]>=0.128.8",
-    "hmr>=0.7.6.2",
     "jurigged>=0.6.1",
     "nodejs-wheel>=24.13.1",
-    "questionary>=2.1.1",
     "typer>=0.16.0",
 ]
 
