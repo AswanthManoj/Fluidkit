@@ -106,8 +106,8 @@ FluidKit reflects on your decorated functions at import time — inspecting para
 ## CLI
 ```bash
 fluidkit init               # scaffold SvelteKit project with FluidKit wired in
-fluidkit dev src/main.py    # run FastAPI + Vite together with HMR
-fluidkit build src/main.py  # codegen + npm run build
+fluidkit dev    # run FastAPI + Vite together with HMR
+fluidkit build  # codegen + npm run build
 ```
 
 
