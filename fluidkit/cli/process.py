@@ -83,7 +83,7 @@ async def _dev_main(config: dict) -> None:
         if str(op).startswith("Update"):
             typer.echo(
                 typer.style("  [fluid] ", fg=typer.colors.BRIGHT_CYAN, bold=True)
-                + typer.style("(server) ", fg=typer.colors.Blu)
+                + typer.style("(server) ", fg=typer.colors.BLUE)
                 + typer.style("hmr update", fg=typer.colors.BRIGHT_GREEN)
                 + f" {op}"
             )
