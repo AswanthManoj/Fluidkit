@@ -6,6 +6,7 @@ import logging
 import threading
 import importlib.util
 from pathlib import Path
+from fluidkit import __version__
 from fluidkit.registry import fluidkit_registry
 
 
@@ -133,7 +134,7 @@ async def _dev_main(config: dict) -> None:
 
 def run_dev(config: dict) -> None:
     display_host = "localhost" if config["host"] == "0.0.0.0" else config["host"]
-    typer.echo(typer.style("\n  fluidkit v0.1.0\n", fg=typer.colors.BRIGHT_CYAN, bold=True))
+    typer.echo(typer.style(f"\n  fluidkit v{__version__}\n", fg=typer.colors.BRIGHT_CYAN, bold=True))
     typer.echo("  → " + typer.style("[fluid]", fg=typer.colors.BRIGHT_CYAN, bold=True) + f"  http://{display_host}:{config['backend_port']}")
     typer.echo("  → " + typer.style("[vite] ", fg=typer.colors.BRIGHT_GREEN,  bold=True) + f"  http://localhost:{config['frontend_port']}\n")
     try:
