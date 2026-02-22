@@ -265,11 +265,7 @@ def _render_form(w: TSWriter, fn: FunctionMetadata) -> None:
     return_type = annotation_to_ts(fn.return_annotation)
 
     if fn.parameters:
-        if len(fn.parameters) == 1:
-            p = fn.parameters[0]
-            signature = f"export const {fn.name} = form('unchecked', async (data: {annotation_to_ts(p.annotation)}) => {{"
-        else:
-            signature = f"export const {fn.name} = form('unchecked', async (data: {{{_ts_params(fn.parameters)}}}) => {{"
+        signature = f"export const {fn.name} = form('unchecked', async (data) => {{"
     else:
         signature = f"export const {fn.name} = form(async () => {{"
 
