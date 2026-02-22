@@ -163,11 +163,15 @@ def _render_mutations_block(w: TSWriter) -> None:
 def _render_query(w: TSWriter, fn: FunctionMetadata) -> None:
     route = generate_route_path(fn)
     return_type = annotation_to_ts(fn.return_annotation)
-    signature = (
-        f"export const {fn.name} = query('unchecked', async ({_ts_params(fn.parameters)}) => {{"
-        if fn.parameters
-        else f"export const {fn.name} = query(async () => {{"
-    )
+    if fn.parameters:
+        if len(fn.parameters) == 1:
+            signature = f"export const {fn.name} = query('unchecked', async ({_ts_params(fn.parameters)}) => {{"
+        else:
+            destructuring_pattern = ", ".join(p.name for p in fn.parameters)
+            signature = f"export const {fn.name} = query('unchecked', async ({{{destructuring_pattern}}}: {{{_ts_params(fn.parameters)}}}) => {{"
+    else:
+        signature = f"export const {fn.name} = query(async () => {{"
+    
     with w.block(signature, "});"):
         w.line("const { cookies: _fk_cookies } = getRequestEvent();")
         with w.block(f"const _fk_res = await fetch(`${{BASE_URL}}{route}`, {{", "});"):
@@ -232,7 +236,16 @@ def _render_command(w: TSWriter, fn: FunctionMetadata) -> None:
     route = generate_route_path(fn)
     return_type = annotation_to_ts(fn.return_annotation)
 
-    with w.block(f"export const {fn.name} = command('unchecked', async ({_ts_params(fn.parameters)}) => {{", "});"):
+    if fn.parameters:
+        if len(fn.parameters) == 1:
+            signature = f"export const {fn.name} = command('unchecked', async ({_ts_params(fn.parameters)}) => {{"
+        else:
+            destructuring_pattern = ", ".join(p.name for p in fn.parameters)
+            signature = f"export const {fn.name} = command('unchecked', async ({{{destructuring_pattern}}}: {{{_ts_params(fn.parameters)}}}) => {{"
+    else:
+        signature = f"export const {fn.name} = command(async () => {{"
+
+    with w.block(signature, "});"):
         w.line("const { cookies: _fk_cookies } = getRequestEvent();")
         with w.block(f"const _fk_res = await fetch(`${{BASE_URL}}{route}`, {{", "});"):
             w.line("method: 'POST',")
@@ -251,7 +264,16 @@ def _render_form(w: TSWriter, fn: FunctionMetadata) -> None:
     route = generate_route_path(fn)
     return_type = annotation_to_ts(fn.return_annotation)
 
-    with w.block(f"export const {fn.name} = form('unchecked', async (data) => {{", "});"):
+    if fn.parameters:
+        if len(fn.parameters) == 1:
+            p = fn.parameters[0]
+            signature = f"export const {fn.name} = form('unchecked', async (data: {annotation_to_ts(p.annotation)}) => {{"
+        else:
+            signature = f"export const {fn.name} = form('unchecked', async (data: {{{_ts_params(fn.parameters)}}}) => {{"
+    else:
+        signature = f"export const {fn.name} = form(async () => {{"
+
+    with w.block(signature, "});"):
         w.line("const { cookies: _fk_cookies } = getRequestEvent();")
         w.blank()
         w.line("const _fk_form = new FormData();")
@@ -285,11 +307,7 @@ def _render_registration(w: TSWriter, fn: FunctionMetadata) -> None:
     if not fn.parameters:
         call = f"{fn.name}().set(_fk_data);"
     else:
-        call_args = ", ".join(
-            f"_fk_args.{p.name} as {annotation_to_ts(p.annotation)}"
-            for p in fn.parameters
-        )
-        call = f"{fn.name}({call_args}).set(_fk_data);"
+        call = f"{fn.name}(_fk_args).set(_fk_data);"
 
     with w.block(f"registerRemoteFunction('{key}', (_fk_args: any, _fk_data: any) => {{", "});"):
         w.line(call)

@@ -55,37 +55,39 @@ class RemoteProxy(Generic[T]):
         self._kwargs = kwargs
         self._executor = executor
         self._func_name = func_name
+
+    def _get_normalized_kwargs(self, inject_request: bool = True) -> dict:
+        """Convert args/kwargs to pure kwargs, optionally inject RequestEvent"""
+        from fluidkit.context import get_request_event
+        
+        bound = self._sig.bind_partial(*self._args, **self._kwargs)
+        kwargs = dict(bound.arguments)
+        
+        if inject_request:
+            for param_name, param in self._sig.parameters.items():
+                if param.annotation is RequestEvent and param_name not in kwargs:
+                    try:
+                        kwargs[param_name] = get_request_event()
+                    except RuntimeError:
+                        pass
+                    break
+        
+        return kwargs
     
     def __await__(self) -> Generator[Any, None, T]:
-        return self._executor(*self._args, **self._kwargs).__await__()
+        kwargs = self._get_normalized_kwargs(inject_request=True)
+        return self._executor(**kwargs).__await__()
     
     async def refresh(self) -> T:
-        from fluidkit.types import RequestEvent
-        from fluidkit.context import get_context, get_request_event
+        from fluidkit.context import get_context
 
-        kwargs = dict(self._kwargs)
-    
-        request_param = None
-        for param_name, param in self._sig.parameters.items():
-            if param.annotation is RequestEvent:
-                request_param = param_name
-                break
-        
-        if request_param:
-            bound = self._sig.bind_partial(*self._args, **self._kwargs)
-            if request_param not in bound.arguments:
-                try:
-                    kwargs[request_param] = get_request_event()
-                except RuntimeError:
-                    pass
-
-        result = await self._executor(*self._args, **kwargs)
+        kwargs = self._get_normalized_kwargs(inject_request=True)
+        result = await self._executor(**kwargs)
         
         try:
             ctx = get_context()
-            bound = self._sig.bind(*self._args, **kwargs)
             args_dict = {
-                k: v for k, v in bound.arguments.items()
+                k: v for k, v in kwargs.items()
                 if self._sig.parameters[k].annotation is not RequestEvent
             }
             ctx.add_refresh(self._func_name, args_dict, result)
@@ -101,11 +103,10 @@ class RemoteProxy(Generic[T]):
     
     async def set(self, data: T) -> None:
         from fluidkit.context import get_context
-        from fluidkit.types import RequestEvent
         
-        bound = self._sig.bind(*self._args, **self._kwargs)
+        kwargs = self._get_normalized_kwargs(inject_request=False)
         args_dict = {
-            k: v for k, v in bound.arguments.items()
+            k: v for k, v in kwargs.items()
             if self._sig.parameters[k].annotation is not RequestEvent
         }
         
@@ -119,4 +120,3 @@ class RemoteProxy(Generic[T]):
                 "Result will not be included in response metadata.",
                 stacklevel=2
             )
-
