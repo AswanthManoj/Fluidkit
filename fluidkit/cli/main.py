@@ -8,6 +8,12 @@ from .patch import patch_svelte_config, patch_vite_config, check_svelte_experime
 app = typer.Typer(help="FluidKit CLI")
 
 
+def _apply_patches(config: dict) -> None:
+    patch_svelte_config(schema_output=config["schema_output"])
+    patch_vite_config(frontend_port=config["frontend_port"])
+    check_svelte_experimental()
+
+
 @app.command()
 def init():
     """Scaffold a new FluidKit + SvelteKit project."""
@@ -23,9 +29,7 @@ def dev(
 ):
     """Run FluidKit backend + Vite frontend together."""
     config = load_config({"host": host, "backend_port": backend_port, "frontend_port": frontend_port})
-    patch_svelte_config(schema_output=config["schema_output"])
-    patch_vite_config(frontend_port=config["frontend_port"])
-    check_svelte_experimental()
+    _apply_patches(config)
     run_dev(config, hmr=not no_hmr)
 
 
@@ -33,11 +37,9 @@ def dev(
 def build(
     backend_port: int = typer.Option(None, help="Override backend port"),
 ):
-    """Run codegen then npm run build."""
+    """Build the project for production."""
     config = load_config({"backend_port": backend_port})
-    patch_svelte_config(schema_output=config["schema_output"])
-    patch_vite_config(frontend_port=config["frontend_port"])
-    check_svelte_experimental()
+    _apply_patches(config)
     run_build(config)
 
 

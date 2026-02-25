@@ -2,11 +2,10 @@ import sys
 import ast
 import types
 import queue
-import asyncio
 import logging
 import threading
+import importlib
 from pathlib import Path
-from contextlib import asynccontextmanager
 
 
 logger = logging.getLogger(__name__)
@@ -14,36 +13,20 @@ logger = logging.getLogger(__name__)
 
 # ── Module-level state ────────────────────────────────────────────────────────
 
-_pending_attach: list = []
 _route_lock = threading.Lock()
 _watch_paths: tuple[str, ...] = ("./",)
 _pending_attach: queue.Queue = queue.Queue()
 _binding_map: dict[str, list[tuple[str, str]]] = {}
-_event_loop: asyncio.AbstractEventLoop | None = None
 
 
 # ── Route safety ──────────────────────────────────────────────────────────────
-# All FastAPI route mutations come from jurigged's thread.
-# _schedule_route_op pushes them onto the event loop so they
-# never race with request handling.
 
-def _apply_route_op(op):
+def _schedule_route_op(op):
     with _route_lock:
         op()
 
 
-def _schedule_route_op(op):
-    if _event_loop is not None:
-        _event_loop.call_soon_threadsafe(_apply_route_op, op)
-    else:
-        # startup — event loop not running yet, safe to call directly
-        with _route_lock:
-            op()
-
-
-# ── Binding tracker ───────────────────────────────────────────────────────────
-# Tracks `from X import Y` bindings so non-function values
-# (constants, Pydantic models) propagate to importers when changed.
+# ── Utils ─────────────────────────────────────────────────────────────────────
 
 def _is_user_module(filename: str) -> bool:
     if not filename or "site-packages" in filename:
@@ -55,6 +38,30 @@ def _is_user_module(filename: str) -> bool:
     )
 
 
+def _module_name_from_path(filepath: str) -> str | None:
+    if ".venv" in filepath:
+        return None
+    resolved = str(Path(filepath).resolve()).lower()
+    for name, mod in sys.modules.items():
+        file = getattr(mod, "__file__", None)
+        if file and str(Path(file).resolve()).lower() == resolved:
+            return name
+    return None
+
+
+def _resolve_module(node_module: str, node_level: int, importing_module: str) -> str:
+    """Resolve a possibly-relative import node to its absolute module name."""
+    if node_level == 0:
+        return node_module
+    parts = importing_module.split(".")
+    parent = ".".join(parts[:-node_level]) if node_level < len(parts) else ""
+    if parent and node_module:
+        return f"{parent}.{node_module}"
+    return parent or node_module
+
+
+# ── Binding tracker ───────────────────────────────────────────────────────────
+
 def _track_imports(module_name: str, filename: str):
     if not _is_user_module(filename) or not filename.endswith(".py"):
         return
@@ -65,27 +72,21 @@ def _track_imports(module_name: str, filename: str):
         return
 
     for node in ast.walk(tree):
-        if not isinstance(node, ast.ImportFrom) or not node.module:
+        if not isinstance(node, ast.ImportFrom):
+            continue
+
+        resolved_module = _resolve_module(node.module or "", node.level, module_name)
+        if not resolved_module:
             continue
 
         if any(alias.name == "*" for alias in node.names):
             logger.warning(
                 "fluidkit hmr: '%s' uses 'from %s import *' — "
-                "variable changes in %s will not hot-reload in this module. "
+                "variable changes in %s will not hot-reload. "
                 "Use explicit imports instead.",
-                module_name, node.module, node.module
+                module_name, resolved_module, resolved_module
             )
             continue
-
-        # resolve relative imports to absolute module name
-        if node.level > 0:
-            # e.g. module_name=src.lib.demo, level=1, node.module=some
-            # -> src.lib.some
-            parts = module_name.split(".")
-            parent = ".".join(parts[:-node.level])
-            resolved_module = f"{parent}.{node.module}" if parent else node.module
-        else:
-            resolved_module = node.module
 
         for alias in node.names:
             key = f"{resolved_module}#{alias.name}"
@@ -104,7 +105,6 @@ def _rebind_changed(source_module: str):
         if attr_name.startswith("_"):
             continue
         value = getattr(src, attr_name, None)
-        # functions are handled by jurigged bytecode patching — skip them
         if callable(value) and not isinstance(value, type):
             continue
 
@@ -117,12 +117,38 @@ def _rebind_changed(source_module: str):
             if mod is None or getattr(mod, local_name, None) is value:
                 continue
             setattr(mod, local_name, value)
-            logger.debug("rebound %s.%s <- %s.%s", importing_module, local_name, source_module, attr_name)
+            logger.debug(
+                "rebound %s.%s <- %s.%s",
+                importing_module, local_name, source_module, attr_name
+            )
+
+
+# ── Relative import fix ───────────────────────────────────────────────────────
+# Jurigged loses __package__ context when exec-ing individual changed statements.
+# This patches Statement.evaluate to always restore it, so `from .x import y`
+# resolves correctly instead of raising ModuleNotFoundError.
+
+def _patch_jurigged_for_relative_imports():
+    import jurigged.codetools as jct
+
+    original_evaluate = jct.LineDefinition.evaluate
+
+    def patched_evaluate(self, glb, lcl):
+        module_name = glb.get("__name__", "")
+        mod = sys.modules.get(module_name)
+        if mod and "." in module_name:
+            if not glb.get("__package__"):
+                glb["__package__"] = module_name.rsplit(".", 1)[0]
+            if not glb.get("__spec__"):
+                spec = getattr(mod, "__spec__", None)
+                if spec:
+                    glb["__spec__"] = spec
+        return original_evaluate(self, glb, lcl)
+
+    jct.LineDefinition.evaluate = patched_evaluate
 
 
 # ── HMRProxy ──────────────────────────────────────────────────────────────────
-# Lives on func._hmr_proxy. Jurigged calls __conform__ when it patches
-# the function. Never exposed to users.
 
 class HMRProxy:
     __slots__ = ("_code", "_func", "_name", "_params", "_module", "_metadata")
@@ -144,7 +170,6 @@ class HMRProxy:
                 module, name, metadata = self._module, self._name, self._metadata
                 def op():
                     fluidkit_registry.unregister(module, name)
-                    # fire codegen so .remote.ts is deleted if no functions remain
                     fluidkit_registry._fire_on_register(metadata)
                 _schedule_route_op(op)
             if hasattr(self._func, '_hmr_proxy'):
@@ -155,7 +180,6 @@ class HMRProxy:
         if not isinstance(new_code, types.CodeType):
             return
 
-        # jurigged passing raw CodeType — update internally, no route changes needed
         if isinstance(new_func, types.CodeType):
             self._code = new_code
             self._params = list(new_code.co_varnames[:new_code.co_argcount])
@@ -168,7 +192,6 @@ class HMRProxy:
         self._func = new_func
 
         if old_params != new_params:
-            # signature changed — codegen needs to regenerate .remote.ts
             fluidkit_registry._fire_on_register(self._metadata)
 
 
@@ -188,8 +211,6 @@ def attach_conform(metadata):
 
 
 # ── Registry patch ────────────────────────────────────────────────────────────
-# Wraps registry.register so route mutations are always
-# applied on the event loop thread, never from jurigged's thread.
 
 def _patch_registry(registry):
     original_register = registry.register
@@ -205,20 +226,10 @@ def _patch_registry(registry):
 
 # ── Watcher callbacks ─────────────────────────────────────────────────────────
 
-def _module_name_from_path(filepath: str) -> str | None:
-    if ".venv" in filepath:
-        return None
-    resolved = str(Path(filepath).resolve()).lower()
-    for name, mod in sys.modules.items():
-        file = getattr(mod, "__file__", None)
-        if file and str(Path(file).resolve()).lower() == resolved:
-            return name
-    return None
-
-
 def _on_postrun(path: str, cf) -> None:
     module_name = _module_name_from_path(path)
     if module_name:
+        _track_imports(module_name, path)  # re-parse — picks up newly added imports
         _rebind_changed(module_name)
     while not _pending_attach.empty():
         try:
@@ -233,30 +244,19 @@ def setup(watcher, watch_paths: tuple[str, ...] = ("./",)):
     global _watch_paths
     _watch_paths = watch_paths
 
+    _patch_jurigged_for_relative_imports()  # must be before jurigged watches anything
+
     from jurigged.register import add_sniffer
     from fluidkit.registry import fluidkit_registry
     from jurigged import registry as jurigged_registry
 
-    # capture event loop when uvicorn starts
-    @asynccontextmanager
-    async def lifespan(_app):
-        global _event_loop
-        _event_loop = asyncio.get_running_loop()
-        yield
-
-    fluidkit_registry.app.router.lifespan_context = lifespan
-
-    # thread-safe route registration
     _patch_registry(fluidkit_registry)
 
-    # seed binding map from already-loaded modules
     for mod_name, mod in list(sys.modules.items()):
         filename = getattr(mod, "__file__", None)
         if filename:
             _track_imports(mod_name, filename)
 
-    # auto_register inventories sys.modules for jurigged + installs
-    # its own sniffer for modules imported after startup
     jurigged_registry.auto_register(
         filter=lambda f: (
             f.endswith(".py")
@@ -266,7 +266,6 @@ def setup(watcher, watch_paths: tuple[str, ...] = ("./",)):
         )
     )
 
-    # our sniffer feeds _binding_map for runtime-imported modules
     add_sniffer(_track_imports)
 
     watcher.postrun.register(_on_postrun)

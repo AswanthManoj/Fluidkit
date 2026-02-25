@@ -1,9 +1,11 @@
 import json
+import uuid
 import inspect
 import logging
 from fastapi import Request
-from typing import Callable, Any
+from datetime import datetime, date
 from fastapi.responses import JSONResponse
+from typing import Callable, Any, Union, Literal, get_args, get_origin
 
 from fluidkit.types import *
 from fluidkit.models import *
@@ -277,7 +279,7 @@ def normalize_types(py_type: Any) -> FieldAnnotation:
     if origin is tuple:
         return FieldAnnotation(container=ContainerType.TUPLE, args=[normalize_types(a) for a in args])
 
-    if origin is typing.Literal:
+    if origin is Literal:
         return FieldAnnotation(container=ContainerType.LITERAL, literal_values=list(args))
 
     if py_type is dict:

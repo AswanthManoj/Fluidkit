@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fluidkit.models import FunctionMetadata
 from typing import Dict, List, Callable, Optional
 from fluidkit.utilities import generate_route_path
+from contextlib import asynccontextmanager, AsyncExitStack
 
 
 _preserved: dict[str, object] = {}
@@ -27,14 +28,14 @@ def preserve(value_or_factory):
     name — no manual key management needed.
 
     Examples:
-        ```python
+```python
         # Direct value — new instance created but discarded after first run
         client = preserve(httpx.Client())
 
         # Factory — never constructed more than once
         db = preserve(lambda: Database(url))
         model = preserve(lambda: load_model("weights.pt"))
-        ```
+```
 
     Note:
         Do not use preserve() for plain constants or variables you want
@@ -43,7 +44,7 @@ def preserve(value_or_factory):
     """
     frame = inspect.currentframe().f_back
     module = frame.f_globals.get("__name__", "__main__")
-    
+
     try:
         line = linecache.getline(frame.f_code.co_filename, frame.f_lineno).strip()
         var_name = line.split("=")[0].strip()
@@ -61,6 +62,14 @@ def preserve(value_or_factory):
     return _preserved[key]
 
 
+async def _invoke(fn, *args):
+    """Call fn with args, awaiting if async."""
+    if inspect.iscoroutinefunction(fn):
+        await fn(*args)
+    else:
+        fn(*args)
+
+
 class FluidKitRegistry:
     _instance = None
 
@@ -69,19 +78,47 @@ class FluidKitRegistry:
             cls._instance = super().__new__(cls)
             cls._instance._initialized = False
         return cls._instance
-    
+
     def __init__(self):
         if self._initialized:
             return
         self.dev = False
         self._initialized = True
-        self.app = self._create_app()
+        self._lifespan_hooks: list[tuple] = []
+        self._startup_hooks: list[Callable] = []
+        self._shutdown_hooks: list[Callable] = []
         self._route_handlers: Dict[str, Callable] = {}
         self.functions: Dict[str, FunctionMetadata] = {}
         self._on_register_callback: Optional[Callable[[FunctionMetadata], None]] = None
+        self.app = self._create_app()
 
     def _create_app(self) -> FastAPI:
-        app = FastAPI(version="0.1.0", title="FluidKit Remote Functions")
+        registry = self
+
+        @asynccontextmanager
+        async def master_lifespan(app):
+            # User @on_startup hooks — in registration order
+            for fn in registry._startup_hooks:
+                await _invoke(fn)
+
+            # User @lifespan context managers — enter in order, exit in reverse
+            async with AsyncExitStack() as stack:
+                for cm, has_app_param in registry._lifespan_hooks:
+                    if has_app_param:
+                        await stack.enter_async_context(cm(app))
+                    else:
+                        await stack.enter_async_context(cm())
+                yield
+
+            # User @on_shutdown hooks — in registration order
+            for fn in registry._shutdown_hooks:
+                await _invoke(fn)
+
+        app = FastAPI(
+            version="0.1.0",
+            title="FluidKit Remote Functions",
+            lifespan=master_lifespan,
+        )
         from fastapi.middleware.cors import CORSMiddleware
         app.add_middleware(
             CORSMiddleware,
@@ -92,6 +129,8 @@ class FluidKitRegistry:
         )
         return app
 
+    # ── Registration ──────────────────────────────────────────────────────
+
     def on_register(self, callback: Callable[[FunctionMetadata], None]):
         self._on_register_callback = callback
 
@@ -101,41 +140,34 @@ class FluidKitRegistry:
 
     def register(self, metadata: FunctionMetadata, handler: Callable):
         key = f"{metadata.module}#{metadata.name}"
+        path = generate_route_path(metadata)
 
         if key in self.functions:
-            old_path = generate_route_path(self.functions[key])
             self.app.router.routes = [
                 r for r in self.app.router.routes
-                if getattr(r, 'path', None) != old_path
+                if getattr(r, 'path', None) != path
             ]
-            self.app.openapi_schema = None
 
         self.functions[key] = metadata
         self._route_handlers[key] = handler
-        self._register_route(metadata, handler)
-        if self._on_register_callback:
-            self._fire_on_register(metadata)
 
-
-    def _register_route(self, metadata: FunctionMetadata, handler: Callable):
-        from fluidkit.utilities import generate_route_path
-        path = generate_route_path(metadata)
         self.app.add_api_route(
             path,
             handler,
             methods=["POST"],
             response_model=None,
-            name=f"{metadata.decorator_type.value}_{metadata.name}"
+            name=f"{metadata.decorator_type.value}_{metadata.name}",
         )
         self.app.openapi_schema = None
 
-    
+        self._fire_on_register(metadata)
+
     def get(self, module: str, name: str) -> FunctionMetadata | None:
         return self.functions.get(f"{module}#{name}")
-    
+
     def get_by_file(self, file_path: str) -> List[FunctionMetadata]:
         return [m for m in self.functions.values() if m.file_path == file_path]
-    
+
     def unregister(self, module: str, name: str):
         key = f"{module}#{name}"
         if key in self.functions:
@@ -151,5 +183,69 @@ class FluidKitRegistry:
                 del self._route_handlers[key]
             self._fire_on_register(metadata)
 
+    # ── Lifecycle hooks ───────────────────────────────────────────────────
+
+    def on_startup(self, func: Callable) -> Callable:
+        """
+        Register an async or sync function to run at app startup.
+
+        Example:
+```python
+            @on_startup
+            async def init_db():
+                global db
+                db = await connect("postgres://...")
+```
+        """
+        self._startup_hooks.append(func)
+        return func
+
+    def on_shutdown(self, func: Callable) -> Callable:
+        """
+        Register an async or sync function to run at app shutdown.
+
+        Example:
+```python
+            @on_shutdown
+            async def cleanup():
+                await db.close()
+```
+        """
+        self._shutdown_hooks.append(func)
+        return func
+
+    def lifespan(self, func: Callable) -> Callable:
+        """
+        Register a lifespan context manager for paired setup/teardown.
+
+        The decorated function must be an async generator that yields once.
+        Optionally accepts the FastAPI app as a parameter.
+
+        Example:
+```python
+            @lifespan
+            async def manage_redis():
+                redis = await aioredis.from_url("redis://localhost")
+                yield
+                await redis.close()
+
+            @lifespan
+            async def manage_db(app):
+                db = await connect(app.state.db_url)
+                yield
+                await db.close()
+```
+        """
+        sig = inspect.signature(func)
+        has_app_param = len(sig.parameters) > 0
+        cm = asynccontextmanager(func)
+        self._lifespan_hooks.append((cm, has_app_param))
+        return func
+
 
 fluidkit_registry = FluidKitRegistry()
+
+
+lifespan = fluidkit_registry.lifespan
+on_startup = fluidkit_registry.on_startup
+on_shutdown = fluidkit_registry.on_shutdown

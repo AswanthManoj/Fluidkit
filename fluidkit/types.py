@@ -1,16 +1,6 @@
-import uuid
-import typing
 import inspect
-from enum import Enum
-from typing import (
-    Any, Generic, 
-    TypeVar, ParamSpec,  
-    Callable, Generator,
-    Any, Union, get_origin, get_args
-)
-from datetime import datetime, date
-from dataclasses import dataclass, field
 from fastapi import UploadFile, Response
+from typing import Any, Generic, TypeVar, ParamSpec, Callable, Generator
 
 
 T = TypeVar('T')
@@ -31,7 +21,7 @@ class Cookies:
         if not self.allow_set:
             raise RuntimeError("Cannot set cookies in @query or @prerender")
         self._cookies_to_set.append((name, value, kwargs))
-    
+
     def apply_to_response(self, response: Response) -> None:
         """Apply all set_cookie calls to FastAPI Response"""
         for name, value, kwargs in self._cookies_to_set:
@@ -59,10 +49,10 @@ class RemoteProxy(Generic[T]):
     def _get_normalized_kwargs(self, inject_request: bool = True) -> dict:
         """Convert args/kwargs to pure kwargs, optionally inject RequestEvent"""
         from fluidkit.context import get_request_event
-        
+
         bound = self._sig.bind_partial(*self._args, **self._kwargs)
         kwargs = dict(bound.arguments)
-        
+
         if inject_request:
             for param_name, param in self._sig.parameters.items():
                 if param.annotation is RequestEvent and param_name not in kwargs:
@@ -71,52 +61,47 @@ class RemoteProxy(Generic[T]):
                     except RuntimeError:
                         pass
                     break
-        
-        return kwargs
-    
-    def __await__(self) -> Generator[Any, None, T]:
-        kwargs = self._get_normalized_kwargs(inject_request=True)
-        return self._executor(**kwargs).__await__()
-    
-    async def refresh(self) -> T:
-        from fluidkit.context import get_context
 
-        kwargs = self._get_normalized_kwargs(inject_request=True)
-        result = await self._executor(**kwargs)
-        
-        try:
-            ctx = get_context()
-            args_dict = {
-                k: v for k, v in kwargs.items()
-                if self._sig.parameters[k].annotation is not RequestEvent
-            }
-            ctx.add_refresh(self._func_name, args_dict, result)
-        except RuntimeError:
-            import warnings
-            warnings.warn(
-                f"{self._func_name}.refresh() called outside command/form context. "
-                "Result will not be included in response metadata.",
-                stacklevel=2
-            )
-        
-        return result
-    
-    async def set(self, data: T) -> None:
-        from fluidkit.context import get_context
-        
+        return kwargs
+
+    def _get_serializable_kwargs(self) -> dict:
+        """Get kwargs dict with RequestEvent params stripped out (for mutation metadata)."""
         kwargs = self._get_normalized_kwargs(inject_request=False)
-        args_dict = {
+        return {
             k: v for k, v in kwargs.items()
             if self._sig.parameters[k].annotation is not RequestEvent
         }
-        
+
+    def _get_context_or_warn(self, method_name: str):
+        """Return FluidKitContext if available, else warn and return None."""
+        from fluidkit.context import get_context
+        import warnings
+
         try:
-            ctx = get_context()
-            ctx.add_set(self._func_name, args_dict, data)
+            return get_context()
         except RuntimeError:
-            import warnings
             warnings.warn(
-                f"{self._func_name}.set() called outside command/form context. "
+                f"{self._func_name}.{method_name}() called outside command/form context. "
                 "Result will not be included in response metadata.",
-                stacklevel=2
+                stacklevel=3,
             )
+            return None
+
+    def __await__(self) -> Generator[Any, None, T]:
+        kwargs = self._get_normalized_kwargs(inject_request=True)
+        return self._executor(**kwargs).__await__()
+
+    async def refresh(self) -> T:
+        kwargs = self._get_normalized_kwargs(inject_request=True)
+        result = await self._executor(**kwargs)
+
+        ctx = self._get_context_or_warn("refresh")
+        if ctx is not None:
+            ctx.add_refresh(self._func_name, self._get_serializable_kwargs(), result)
+
+        return result
+
+    async def set(self, data: T) -> None:
+        ctx = self._get_context_or_warn("set")
+        if ctx is not None:
+            ctx.add_set(self._func_name, self._get_serializable_kwargs(), data)

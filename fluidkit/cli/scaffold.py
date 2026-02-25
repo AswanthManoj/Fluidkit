@@ -1,8 +1,7 @@
 import sys
-import typer
 import shutil
 from pathlib import Path
-from .utils import get_npx, get_npm, _fmt
+from .utils import echo, _COLORS, get_npx, get_npm
 from .config import write_default_config, load_config
 from .patch import patch_svelte_config, patch_vite_config, patch_svelte_experimental
 
@@ -20,11 +19,11 @@ def copy_runtime_files(schema_output: str = "src/lib/fluidkit") -> None:
 def copy_template_files() -> None:
     templates_src = Path(__file__).parent.parent / "runtime" / "templates"
 
-    for init_path in ("src/__init__.py", "src/lib/__init__.py"):
+    for init_path in ("src", "src/lib"):
         p = Path(init_path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.touch()
-    
+        p.mkdir(parents=True, exist_ok=True)
+        (p / "__init__.py").touch()
+
     mapping = {
         "app.py":       "src/app.py",
         "demo.py":      "src/lib/demo.py",
@@ -56,13 +55,13 @@ def scaffold_project():
         return_completed_process=True
     )
     if result.returncode != 0:
-        typer.echo(_fmt("fluidkit", "sv create failed."))
+        echo("fluidkit", "sv create failed.", _COLORS["error"])
         sys.exit(result.returncode)
 
-    typer.echo(_fmt("fluidkit", "installing dependencies..."))
+    echo("fluidkit", "installing dependencies...")
     result = npm(["install"], return_completed_process=True)
     if result.returncode != 0:
-        typer.echo(_fmt("fluidkit", "npm install failed."))
+        echo("fluidkit", "npm install failed.", _COLORS["error"])
         sys.exit(result.returncode)
 
     write_default_config()
@@ -70,31 +69,31 @@ def scaffold_project():
     config = load_config()
 
     copy_runtime_files(schema_output=config["schema_output"])
-    typer.echo(_fmt("fluidkit", f"runtime files copied to {config['schema_output']}"))
+    echo("fluidkit", f"runtime files copied to {config['schema_output']}")
 
     copy_template_files()
-    typer.echo(_fmt("fluidkit", "scaffolded src/"))
+    echo("fluidkit", "scaffolded src/")
 
     ok = patch_svelte_config(schema_output=config["schema_output"])
     if ok:
-        typer.echo(_fmt("fluidkit", "patched svelte.config"))
+        echo("fluidkit", "patched svelte.config")
     else:
-        typer.echo(_fmt("fluidkit", "⚠ could not patch svelte.config — add this manually:"))
-        typer.echo(f"    kit: {{ alias: {{ '$fluidkit': './{config['schema_output']}' }} }}")
+        echo("fluidkit", "⚠ could not patch svelte.config — add this manually:", _COLORS["warn"])
+        echo("fluidkit", f"    kit: {{ alias: {{ '$fluidkit': './{config['schema_output']}' }} }}")
 
     ok = patch_svelte_experimental()
     if ok:
-        typer.echo(_fmt("fluidkit", "set experimental flags in svelte.config"))
+        echo("fluidkit", "set experimental flags in svelte.config")
     else:
-        typer.echo(_fmt("fluidkit", "⚠ could not set experimental flags — add them manually:"))
-        typer.echo("    kit: { experimental: { remoteFunctions: true } }")
-        typer.echo("    compilerOptions: { experimental: { async: true } }")
+        echo("fluidkit", "⚠ could not set experimental flags — add them manually:", _COLORS["warn"])
+        echo("fluidkit", "    kit: { experimental: { remoteFunctions: true } }")
+        echo("fluidkit", "    compilerOptions: { experimental: { async: true } }")
 
     ok = patch_vite_config(frontend_port=config["frontend_port"])
     if ok:
-        typer.echo(_fmt("fluidkit", "patched vite.config"))
+        echo("fluidkit", "patched vite.config")
     else:
-        typer.echo(_fmt("fluidkit", "⚠ could not patch vite.config — add this manually:"))
-        typer.echo(f"    server: {{ port: {config['frontend_port']} }}")
+        echo("fluidkit", "⚠ could not patch vite.config — add this manually:", _COLORS["warn"])
+        echo("fluidkit", f"    server: {{ port: {config['frontend_port']} }}")
 
-    typer.echo(_fmt("fluidkit", f"done! run: `fluidkit dev`"))
+    echo("fluidkit", "done! run: `fluidkit dev`")

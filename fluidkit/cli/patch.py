@@ -1,6 +1,11 @@
 import re
 import json
 from pathlib import Path
+from .utils import echo, _COLORS
+
+
+_VITE_CONFIGS = ("vite.config.ts", "vite.config.js")
+_SVELTE_CONFIGS = ("svelte.config.js", "svelte.config.ts")
 
 
 _EXPERIMENTAL_MERGE = {
@@ -92,7 +97,18 @@ console.log(JSON.stringify({{ok: true}}));
 """
 
 
-def _extract_adapter_comments(src: str) -> list[str] | None:
+def _find_config(project_root: str, names: tuple[str, ...]) -> Path | None:
+    for name in names:
+        p = Path(project_root) / name
+        if p.exists():
+            return p
+    return None
+
+
+def _extract_comments(src: str) -> dict:
+    comments = {}
+
+    # adapter comments
     lines = src.splitlines()
     for i, line in enumerate(lines):
         if re.match(r'\s*adapter\s*:', line):
@@ -101,34 +117,39 @@ def _extract_adapter_comments(src: str) -> list[str] | None:
             while j >= 0 and lines[j].strip().startswith("//"):
                 block.insert(0, lines[j])
                 j -= 1
-            return block if block else None
-    return None
-
-
-def _extract_type_comment(src: str) -> str | None:
-    match = re.search(r'(/\*\*[^*]*\*+(?:[^/*][^*]*\*+)*/\s*\n)(?=\s*(?:const|let|var|export\s+default)\s)', src)
-    return match.group(1) if match else None
-
-
-def _reinsert_adapter_comments(src: str, block: list[str]) -> str:
-    lines = src.splitlines()
-    for i, line in enumerate(lines):
-        if re.match(r'\s*adapter\s*:', line):
-            indent = line[: len(line) - len(line.lstrip())]
-            indented = [indent + l.strip() for l in block]
-            lines = lines[:i] + indented + lines[i:]
+            if block:
+                comments["adapter"] = block
             break
-    return "\n".join(lines) + "\n"
+
+    # type comment
+    match = re.search(r'(/\*\*[^*]*\*+(?:[^/*][^*]*\*+)*/\s*\n)(?=\s*(?:const|let|var|export\s+default)\s)', src)
+    if match:
+        comments["type"] = match.group(1)
+
+    return comments
 
 
-def _reinsert_type_comment(src: str, comment: str) -> str:
-    src = re.sub(r'\s*/\*\*[^*]*\*+(?:[^/*][^*]*\*+)*/\s*', '', src)
-    return re.sub(
-        r'\n+(?=(?:const|let|var|export\s+default)\s)',
-        '\n\n' + comment,
-        src,
-        count=1
-    )
+def _reinsert_comments(src: str, comments: dict) -> str:
+    if "adapter" in comments:
+        lines = src.splitlines()
+        for i, line in enumerate(lines):
+            if re.match(r'\s*adapter\s*:', line):
+                indent = line[: len(line) - len(line.lstrip())]
+                indented = [indent + l.strip() for l in comments["adapter"]]
+                lines = lines[:i] + indented + lines[i:]
+                break
+        src = "\n".join(lines) + "\n"
+
+    if "type" in comments:
+        src = re.sub(r'\s*/\*\*[^*]*\*+(?:[^/*][^*]*\*+)*/\s*', '', src)
+        src = re.sub(
+            r'\n+(?=(?:const|let|var|export\s+default)\s)',
+            '\n\n' + comments["type"],
+            src,
+            count=1
+        )
+
+    return src
 
 
 def patch_svelte_experimental(project_root: str = ".") -> bool:
@@ -137,16 +158,12 @@ def patch_svelte_experimental(project_root: str = ".") -> bool:
     except ImportError:
         return False
 
-    for name in ("svelte.config.js", "svelte.config.ts"):
-        config_path = Path(project_root) / name
-        if config_path.exists():
-            break
-    else:
+    config_path = _find_config(project_root, _SVELTE_CONFIGS)
+    if not config_path:
         return False
 
     original_src = config_path.read_text(encoding="utf-8")
-    adapter_comments = _extract_adapter_comments(original_src)
-    type_comment = _extract_type_comment(original_src)
+    comments = _extract_comments(original_src)
 
     script = _PATCH_SCRIPT.format(
         config_path=json.dumps(str(config_path.resolve()).replace("\\", "/")),
@@ -165,20 +182,12 @@ def patch_svelte_experimental(project_root: str = ".") -> bool:
         if result.returncode != 0:
             stderr = (result.stderr or b"").decode(errors="replace").strip()
             if stderr:
-                import typer
-                typer.echo(
-                    typer.style("  [fluid]", fg=typer.colors.BRIGHT_YELLOW, bold=True)
-                    + f" experimental patch failed: {stderr}"
-                )
+                echo("fluid", f"experimental patch failed: {stderr}", _COLORS["warn"])
             return False
 
         patched_src = config_path.read_text(encoding="utf-8")
-        if adapter_comments:
-            patched_src = _reinsert_adapter_comments(patched_src, adapter_comments)
-            config_path.write_text(patched_src, encoding="utf-8")
-
-        if type_comment:
-            patched_src = _reinsert_type_comment(patched_src, type_comment)
+        if comments:
+            patched_src = _reinsert_comments(patched_src, comments)
             config_path.write_text(patched_src, encoding="utf-8")
 
         return json.loads(result.stdout).get("ok", False)
@@ -189,11 +198,8 @@ def patch_svelte_experimental(project_root: str = ".") -> bool:
 
 
 def check_svelte_experimental(project_root: str = ".") -> None:
-    for name in ("svelte.config.js", "svelte.config.ts"):
-        config_path = Path(project_root) / name
-        if config_path.exists():
-            break
-    else:
+    config_path = _find_config(project_root, _SVELTE_CONFIGS)
+    if not config_path:
         return
 
     original = config_path.read_text(encoding="utf-8")
@@ -204,21 +210,14 @@ def check_svelte_experimental(project_root: str = ".") -> None:
         missing.append("compilerOptions.experimental.async: true")
 
     if missing:
-        import typer
-        typer.echo(
-            typer.style("  [fluid]", fg=typer.colors.BRIGHT_YELLOW, bold=True)
-            + " svelte.config missing: " + ", ".join(missing)
-        )
+        echo("fluid", "svelte.config missing: " + ", ".join(missing), _COLORS["warn"])
 
 
 def patch_svelte_config(project_root: str = ".", schema_output: str = "src/lib/fluidkit") -> bool:
     alias_value = f"'$fluidkit': './{schema_output}'"
 
-    for name in ("svelte.config.js", "svelte.config.ts"):
-        config_path = Path(project_root) / name
-        if config_path.exists():
-            break
-    else:
+    config_path = _find_config(project_root, _SVELTE_CONFIGS)
+    if not config_path:
         return False
 
     original = config_path.read_text(encoding="utf-8")
@@ -272,11 +271,8 @@ def patch_svelte_config(project_root: str = ".", schema_output: str = "src/lib/f
 
 
 def patch_vite_config(project_root: str = ".", frontend_port: int = 5173) -> bool:
-    for name in ("vite.config.ts", "vite.config.js"):
-        config_path = Path(project_root) / name
-        if config_path.exists():
-            break
-    else:
+    config_path = _find_config(project_root, _VITE_CONFIGS)
+    if not config_path:
         return False
 
     original = config_path.read_text(encoding="utf-8")
