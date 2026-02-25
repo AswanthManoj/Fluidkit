@@ -1,7 +1,64 @@
+import inspect
+import linecache
 from fastapi import FastAPI
 from fluidkit.models import FunctionMetadata
 from typing import Dict, List, Callable, Optional
 from fluidkit.utilities import generate_route_path
+
+
+_preserved: dict[str, object] = {}
+
+
+def preserve(value_or_factory):
+    """
+    Preserve a value across HMR module re-executions.
+
+    Use this for expensive or stateful objects that should be initialized
+    once and never recreated when the module is hot-reloaded — database
+    connections, HTTP clients, loaded ML models, etc.
+
+    Accepts either a direct value or a zero-argument factory callable.
+    If a factory is provided, it is only called once regardless of how
+    many times the module re-executes. If a direct value is provided,
+    it is stored on first execution and the new value is silently
+    discarded on subsequent reloads.
+
+    The key is automatically derived from the calling module and variable
+    name — no manual key management needed.
+
+    Examples:
+        ```python
+        # Direct value — new instance created but discarded after first run
+        client = preserve(httpx.Client())
+
+        # Factory — never constructed more than once
+        db = preserve(lambda: Database(url))
+        model = preserve(lambda: load_model("weights.pt"))
+        ```
+
+    Note:
+        Do not use preserve() for plain constants or variables you want
+        to update during development. Those update automatically via HMR.
+        preserve() is only for values that must survive re-execution.
+    """
+    frame = inspect.currentframe().f_back
+    module = frame.f_globals.get("__name__", "__main__")
+    
+    try:
+        line = linecache.getline(frame.f_code.co_filename, frame.f_lineno).strip()
+        var_name = line.split("=")[0].strip()
+    except Exception:
+        var_name = str(frame.f_lineno)
+
+    key = f"{module}#{var_name}"
+
+    if key not in _preserved:
+        if callable(value_or_factory) and not isinstance(value_or_factory, type):
+            _preserved[key] = value_or_factory()
+        else:
+            _preserved[key] = value_or_factory
+
+    return _preserved[key]
 
 
 class FluidKitRegistry:
@@ -92,6 +149,7 @@ class FluidKitRegistry:
             del self.functions[key]
             if key in self._route_handlers:
                 del self._route_handlers[key]
+            self._fire_on_register(metadata)
 
 
 fluidkit_registry = FluidKitRegistry()

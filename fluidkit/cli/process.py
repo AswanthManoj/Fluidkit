@@ -63,44 +63,51 @@ async def _stream(stream, prefix: str, color):
             typer.echo(typer.style(f"  [{prefix}]", fg=color, bold=True) + f" {text}")
 
 
-async def _dev_main(config: dict) -> None:
+async def _dev_main(config: dict, hmr: bool = True) -> None:
     import uvicorn
     import jurigged
-    from fluidkit import hmr
+    from fluidkit import hmr as hmr_module
     from fluidkit.codegen import generate, watch as codegen_watch
 
     load_entry(config["entry"])
-
     fluidkit_registry.dev = True
 
     base_url = f"http://{'localhost' if config['host'] == '0.0.0.0' else config['host']}:{config['backend_port']}"
     generate(fluidkit_registry.functions, base_url=base_url, schema_output=config["schema_output"])
     codegen_watch(fluidkit_registry, base_url=base_url, schema_output=config["schema_output"])
-    
-    def _jurigged_logger(op):
-        if str(op).startswith("Watch"):
-            return
-        if str(op).startswith("Update"):
+
+    if hmr:
+        def _jurigged_logger(op: str):
+            if str(op).startswith("Watch"):
+                return
+            elif str(op).startswith("Run"):
+                color = typer.colors.BRIGHT_BLUE
+            elif str(op).startswith("Delete"):
+                color = typer.colors.BRIGHT_RED
+            else:
+                color = typer.colors.BRIGHT_GREEN
             typer.echo(
                 typer.style("  [fluid] ", fg=typer.colors.BRIGHT_CYAN, bold=True)
-                + typer.style("(server) ", fg=typer.colors.BLUE)
-                + typer.style("hmr update", fg=typer.colors.BRIGHT_GREEN)
-                + f" {op}"
-            )
-        else:
-            typer.echo(
-                typer.style("  [fluid] ", fg=typer.colors.BRIGHT_CYAN, bold=True) 
-                + typer.style("(server) ", fg=typer.colors.BLUE)
+                + typer.style("hmr update", fg=color)
                 + f" {op}"
             )
 
-    watcher = jurigged.watch(
-        logger=_jurigged_logger,
-        pattern=config["watch_pattern"]
-    )
-    hmr.setup(watcher)
-    for metadata in fluidkit_registry.functions.values():
-        hmr.attach_conform(metadata)
+        watcher = jurigged.watch(
+            logger=_jurigged_logger,
+            pattern=config["watch_pattern"]
+        )
+        watch_dir = str(Path(config["entry"]).parent)
+        hmr_module.setup(watcher, watch_paths=(watch_dir,))
+
+        for metadata in fluidkit_registry.functions.values():
+            hmr_module.attach_conform(metadata)
+    
+    else:
+        # no-hmr: use watchfiles to restart on change
+        typer.echo(
+            typer.style("  [fluid]", fg=typer.colors.BRIGHT_YELLOW, bold=True)
+            + " HMR disabled — server will restart on file changes"
+        )
 
     _setup_logging()
     server = uvicorn.Server(uvicorn.Config(
@@ -108,6 +115,7 @@ async def _dev_main(config: dict) -> None:
         host=config["host"],
         port=config["backend_port"],
         log_config=None,
+        reload=not hmr,  # uvicorn handles restart when hmr is off
     ))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
@@ -132,13 +140,13 @@ async def _dev_main(config: dict) -> None:
         thread.join(timeout=5)
 
 
-def run_dev(config: dict) -> None:
+def run_dev(config: dict, hmr: bool = True) -> None:
     display_host = "localhost" if config["host"] == "0.0.0.0" else config["host"]
     typer.echo(typer.style(f"\n  fluidkit v{__version__}\n", fg=typer.colors.BRIGHT_CYAN, bold=True))
     typer.echo("  → " + typer.style("[fluid]", fg=typer.colors.BRIGHT_CYAN, bold=True) + f"  http://{display_host}:{config['backend_port']}")
-    typer.echo("  → " + typer.style("[vite] ", fg=typer.colors.BRIGHT_GREEN,  bold=True) + f"  http://localhost:{config['frontend_port']}\n")
+    typer.echo("  → " + typer.style("[vite] ", fg=typer.colors.BRIGHT_GREEN, bold=True) + f"  http://localhost:{config['frontend_port']}\n")
     try:
-        asyncio.run(_dev_main(config))
+        asyncio.run(_dev_main(config, hmr=hmr))
     except KeyboardInterrupt:
         pass
 
@@ -160,3 +168,48 @@ def run_build(config: dict) -> None:
     result = subprocess.run(["npm", "run", "build"])
     if result.returncode != 0:
         raise SystemExit(result.returncode)
+
+
+def run_preview(config: dict) -> None:
+    import uvicorn 
+    
+    async def _preview_main():
+        load_entry(config["entry"])
+
+        _setup_logging()
+        server = uvicorn.Server(uvicorn.Config(
+            fluidkit_registry.app,
+            host=config["host"],
+            port=config["backend_port"],
+            log_config=None,
+        ))
+        thread = threading.Thread(target=server.run, daemon=True)
+        thread.start()
+
+        proc = await asyncio.create_subprocess_exec(
+            "npm", "run", "preview",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        try:
+            await asyncio.gather(
+                _stream(proc.stdout, "vite", typer.colors.BRIGHT_GREEN),
+                _stream(proc.stderr, "vite", typer.colors.BRIGHT_YELLOW),
+            )
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            pass
+        finally:
+            proc.terminate()
+            await proc.wait()
+            server.should_exit = True
+            thread.join(timeout=5)
+
+    display_host = "localhost" if config["host"] == "0.0.0.0" else config["host"]
+    typer.echo(typer.style(f"\n  fluidkit v{__version__}\n", fg=typer.colors.BRIGHT_CYAN, bold=True))
+    typer.echo("  → " + typer.style("[fluid]", fg=typer.colors.BRIGHT_CYAN, bold=True) + f"  http://{display_host}:{config['backend_port']}")
+    typer.echo("  → " + typer.style("[vite] ", fg=typer.colors.BRIGHT_GREEN, bold=True) + f"  http://localhost:{config['frontend_port']}\n")
+    try:
+        asyncio.run(_preview_main())
+    except KeyboardInterrupt:
+        pass

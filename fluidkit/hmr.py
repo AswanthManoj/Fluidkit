@@ -1,15 +1,133 @@
 import sys
+import ast
 import types
+import queue
+import asyncio
 import logging
-from fluidkit.models import FunctionMetadata, FieldAnnotation
+import threading
+from pathlib import Path
+from contextlib import asynccontextmanager
+
 
 logger = logging.getLogger(__name__)
 
 
-class RemoteFunction:
+# ── Module-level state ────────────────────────────────────────────────────────
+
+_pending_attach: list = []
+_route_lock = threading.Lock()
+_watch_paths: tuple[str, ...] = ("./",)
+_pending_attach: queue.Queue = queue.Queue()
+_binding_map: dict[str, list[tuple[str, str]]] = {}
+_event_loop: asyncio.AbstractEventLoop | None = None
+
+
+# ── Route safety ──────────────────────────────────────────────────────────────
+# All FastAPI route mutations come from jurigged's thread.
+# _schedule_route_op pushes them onto the event loop so they
+# never race with request handling.
+
+def _apply_route_op(op):
+    with _route_lock:
+        op()
+
+
+def _schedule_route_op(op):
+    if _event_loop is not None:
+        _event_loop.call_soon_threadsafe(_apply_route_op, op)
+    else:
+        # startup — event loop not running yet, safe to call directly
+        with _route_lock:
+            op()
+
+
+# ── Binding tracker ───────────────────────────────────────────────────────────
+# Tracks `from X import Y` bindings so non-function values
+# (constants, Pydantic models) propagate to importers when changed.
+
+def _is_user_module(filename: str) -> bool:
+    if not filename or "site-packages" in filename:
+        return False
+    resolved = str(Path(filename).resolve())
+    return any(
+        resolved.startswith(str(Path(p).resolve()))
+        for p in _watch_paths
+    )
+
+
+def _track_imports(module_name: str, filename: str):
+    if not _is_user_module(filename) or not filename.endswith(".py"):
+        return
+    try:
+        source = Path(filename).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+    except Exception:
+        return
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom) or not node.module:
+            continue
+
+        if any(alias.name == "*" for alias in node.names):
+            logger.warning(
+                "fluidkit hmr: '%s' uses 'from %s import *' — "
+                "variable changes in %s will not hot-reload in this module. "
+                "Use explicit imports instead.",
+                module_name, node.module, node.module
+            )
+            continue
+
+        # resolve relative imports to absolute module name
+        if node.level > 0:
+            # e.g. module_name=src.lib.demo, level=1, node.module=some
+            # -> src.lib.some
+            parts = module_name.split(".")
+            parent = ".".join(parts[:-node.level])
+            resolved_module = f"{parent}.{node.module}" if parent else node.module
+        else:
+            resolved_module = node.module
+
+        for alias in node.names:
+            key = f"{resolved_module}#{alias.name}"
+            entry = (module_name, alias.asname or alias.name)
+            _binding_map.setdefault(key, [])
+            if entry not in _binding_map[key]:
+                _binding_map[key].append(entry)
+
+
+def _rebind_changed(source_module: str):
+    src = sys.modules.get(source_module)
+    if src is None:
+        return
+
+    for attr_name in list(vars(src)):
+        if attr_name.startswith("_"):
+            continue
+        value = getattr(src, attr_name, None)
+        # functions are handled by jurigged bytecode patching — skip them
+        if callable(value) and not isinstance(value, type):
+            continue
+
+        key = f"{source_module}#{attr_name}"
+        if key not in _binding_map:
+            continue
+
+        for importing_module, local_name in _binding_map[key]:
+            mod = sys.modules.get(importing_module)
+            if mod is None or getattr(mod, local_name, None) is value:
+                continue
+            setattr(mod, local_name, value)
+            logger.debug("rebound %s.%s <- %s.%s", importing_module, local_name, source_module, attr_name)
+
+
+# ── HMRProxy ──────────────────────────────────────────────────────────────────
+# Lives on func._hmr_proxy. Jurigged calls __conform__ when it patches
+# the function. Never exposed to users.
+
+class HMRProxy:
     __slots__ = ("_code", "_func", "_name", "_params", "_module", "_metadata")
 
-    def __init__(self, func, metadata: FunctionMetadata):
+    def __init__(self, func, metadata):
         self._func = func
         self._name = func.__name__
         self._code = func.__code__
@@ -18,20 +136,26 @@ class RemoteFunction:
         self._metadata = metadata
 
     def __conform__(self, new_func):
+        from fluidkit.registry import fluidkit_registry
+
         if new_func is None:
-            from fluidkit.registry import fluidkit_registry
             key = f"{self._module}#{self._name}"
             if fluidkit_registry.functions.get(key) is self._metadata:
-                fluidkit_registry.unregister(self._module, self._name)
-                fluidkit_registry._fire_on_register(self._metadata)
-            if hasattr(self._func, '_remote_wrapper'):
-                del self._func._remote_wrapper
+                module, name, metadata = self._module, self._name, self._metadata
+                def op():
+                    fluidkit_registry.unregister(module, name)
+                    # fire codegen so .remote.ts is deleted if no functions remain
+                    fluidkit_registry._fire_on_register(metadata)
+                _schedule_route_op(op)
+            if hasattr(self._func, '_hmr_proxy'):
+                del self._func._hmr_proxy
             return
 
         new_code = getattr(new_func, '__code__', new_func)
         if not isinstance(new_code, types.CodeType):
             return
 
+        # jurigged passing raw CodeType — update internally, no route changes needed
         if isinstance(new_func, types.CodeType):
             self._code = new_code
             self._params = list(new_code.co_varnames[:new_code.co_argcount])
@@ -44,12 +168,13 @@ class RemoteFunction:
         self._func = new_func
 
         if old_params != new_params:
-            logger.debug("[fluid] %s signature updated", self._name)
-            from fluidkit.registry import fluidkit_registry
+            # signature changed — codegen needs to regenerate .remote.ts
             fluidkit_registry._fire_on_register(self._metadata)
 
 
-def attach_conform(metadata: FunctionMetadata):
+# ── Conform attachment ────────────────────────────────────────────────────────
+
+def attach_conform(metadata):
     module = sys.modules.get(metadata.module)
     if module is None:
         return
@@ -57,16 +182,91 @@ def attach_conform(metadata: FunctionMetadata):
     if module_level is None:
         return
     actual_func = getattr(module_level, '__wrapped__', module_level)
-    if hasattr(actual_func, '_remote_wrapper'):
+    if hasattr(actual_func, '_hmr_proxy'):
         return
-    actual_func._remote_wrapper = RemoteFunction(actual_func, metadata)
+    actual_func._hmr_proxy = HMRProxy(actual_func, metadata)
+
+
+# ── Registry patch ────────────────────────────────────────────────────────────
+# Wraps registry.register so route mutations are always
+# applied on the event loop thread, never from jurigged's thread.
+
+def _patch_registry(registry):
+    original_register = registry.register
+
+    def safe_register(metadata, handler):
+        def op():
+            original_register(metadata, handler)
+        _schedule_route_op(op)
+        _pending_attach.put(metadata)
+
+    registry.register = safe_register
+
+
+# ── Watcher callbacks ─────────────────────────────────────────────────────────
+
+def _module_name_from_path(filepath: str) -> str | None:
+    if ".venv" in filepath:
+        return None
+    resolved = str(Path(filepath).resolve()).lower()
+    for name, mod in sys.modules.items():
+        file = getattr(mod, "__file__", None)
+        if file and str(Path(file).resolve()).lower() == resolved:
+            return name
+    return None
 
 
 def _on_postrun(path: str, cf) -> None:
+    module_name = _module_name_from_path(path)
+    if module_name:
+        _rebind_changed(module_name)
+    while not _pending_attach.empty():
+        try:
+            attach_conform(_pending_attach.get_nowait())
+        except queue.Empty:
+            break
+
+
+# ── Setup ─────────────────────────────────────────────────────────────────────
+
+def setup(watcher, watch_paths: tuple[str, ...] = ("./",)):
+    global _watch_paths
+    _watch_paths = watch_paths
+
+    from jurigged.register import add_sniffer
     from fluidkit.registry import fluidkit_registry
-    for metadata in fluidkit_registry.functions.values():
-        attach_conform(metadata)
+    from jurigged import registry as jurigged_registry
 
+    # capture event loop when uvicorn starts
+    @asynccontextmanager
+    async def lifespan(_app):
+        global _event_loop
+        _event_loop = asyncio.get_running_loop()
+        yield
 
-def setup(watcher):
+    fluidkit_registry.app.router.lifespan_context = lifespan
+
+    # thread-safe route registration
+    _patch_registry(fluidkit_registry)
+
+    # seed binding map from already-loaded modules
+    for mod_name, mod in list(sys.modules.items()):
+        filename = getattr(mod, "__file__", None)
+        if filename:
+            _track_imports(mod_name, filename)
+
+    # auto_register inventories sys.modules for jurigged + installs
+    # its own sniffer for modules imported after startup
+    jurigged_registry.auto_register(
+        filter=lambda f: (
+            f.endswith(".py")
+            and ".venv" not in f
+            and "site-packages" not in f
+            and str(Path(f).resolve()).startswith(str(Path("./").resolve()))
+        )
+    )
+
+    # our sniffer feeds _binding_map for runtime-imported modules
+    add_sniffer(_track_imports)
+
     watcher.postrun.register(_on_postrun)
