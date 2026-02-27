@@ -2,8 +2,8 @@ import typer
 from .config import load_config
 from .scaffold import scaffold_project
 from .process import run_dev, run_build, run_preview
+from .utils import run_node_tool, ensure_node_modules
 from .patch import patch_svelte_config, patch_vite_config, check_svelte_experimental
-from .utils import run_node_tool
 
 
 app = typer.Typer(help="FluidKit CLI")
@@ -31,6 +31,7 @@ def dev(
     """Run FluidKit backend + Vite frontend together."""
     config = load_config({"host": host, "backend_port": backend_port, "frontend_port": frontend_port})
     _apply_patches(config)
+    ensure_node_modules()
     run_dev(config, hmr=not no_hmr)
 
 
@@ -41,6 +42,7 @@ def build(
     """Build the project for production."""
     config = load_config({"backend_port": backend_port})
     _apply_patches(config)
+    ensure_node_modules()
     run_build(config)
 
 
@@ -51,6 +53,7 @@ def preview(
 ):
     """Preview the production build locally."""
     config = load_config({"backend_port": backend_port, "frontend_port": frontend_port})
+    ensure_node_modules()
     run_preview(config)
 
 
