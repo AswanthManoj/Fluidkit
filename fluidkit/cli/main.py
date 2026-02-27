@@ -3,6 +3,7 @@ from .config import load_config
 from .scaffold import scaffold_project
 from .process import run_dev, run_build, run_preview
 from .patch import patch_svelte_config, patch_vite_config, check_svelte_experimental
+from .utils import run_node_tool
 
 
 app = typer.Typer(help="FluidKit CLI")
@@ -51,6 +52,44 @@ def preview(
     """Preview the production build locally."""
     config = load_config({"backend_port": backend_port, "frontend_port": frontend_port})
     run_preview(config)
+
+
+@app.command(
+    context_settings={"allow_extra_args": True, "allow_interspersed_args": False}
+)
+def npm(ctx: typer.Context):
+    """Run any npm command. Usage: fluidkit npm install, fluidkit npm run build, etc."""
+    run_node_tool("npm", ctx.args)
+
+
+@app.command(
+    context_settings={"allow_extra_args": True, "allow_interspersed_args": False}
+)
+def npx(ctx: typer.Context):
+    """Run any npx command. Usage: fluidkit npx sv add tailwindcss, fluidkit npx prisma generate, etc."""
+    run_node_tool("npx", ctx.args)
+
+
+@app.command(
+    context_settings={"allow_extra_args": True, "allow_interspersed_args": False}
+)
+def node(ctx: typer.Context):
+    """Run node directly. Usage: fluidkit node script.js, fluidkit node --version, etc."""
+    run_node_tool("node", ctx.args)
+
+
+@app.command(
+    context_settings={"allow_extra_args": True, "allow_interspersed_args": False}
+)
+def install(
+    ctx: typer.Context,
+    dev: bool = typer.Option(False, "-D", "--save-dev", help="Install as dev dependency"),
+):
+    """Install npm packages. Usage: fluidkit install tailwindcss, fluidkit install -D prettier"""
+    args = ["install"] + ctx.args
+    if dev:
+        args.insert(1, "--save-dev")
+    run_node_tool("npm", args)
 
 
 if __name__ == "__main__":

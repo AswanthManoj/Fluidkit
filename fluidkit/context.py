@@ -28,20 +28,12 @@ class FluidKitContext:
     def __init__(self):
         self.mutations: List[MutationEntry] = []
 
-    def add_refresh(self, key: str, args: dict, data: Any):
+    def add_mutation(self, mutation_type: MutationType, key: str, args: dict, data: Any):
         self.mutations.append(MutationEntry(
             key=key,
             args=args,
             data=data,
-            mutation_type=MutationType.REFRESH
-        ))
-
-    def add_set(self, key: str, args: dict, data: Any):
-        self.mutations.append(MutationEntry(
-            key=key,
-            args=args,
-            data=data,
-            mutation_type=MutationType.SET
+            mutation_type=mutation_type,
         ))
 
 

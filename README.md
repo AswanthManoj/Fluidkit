@@ -11,6 +11,7 @@
 <br/>
 
 FluidKit bridges Python and SvelteKit into a unified fullstack framework. Write backend functions in Python — FluidKit registers them as FastAPI endpoints and wraps them in SvelteKit-native remote functions with full type safety, cookie forwarding, file uploads, redirects, and single-flight cache invalidation.
+
 ```bash
 pip install fluidkit
 ```
@@ -60,7 +61,8 @@ async def add_post(title: str, content: str):
 
     await get_posts().refresh() # invalidates client cache in the same request with single flight mutations
 ```
-```typescript
+
+```svelte
 <!-- src/routes/+page.svelte -->
 <script>
     import { get_posts, like_post, add_post } from '$lib/demo.remote';
@@ -94,8 +96,6 @@ FluidKit reflects on your decorated functions at import time — inspecting para
 
 ## Decorators
 
-## Decorators
-
 | Decorator | Use case | SvelteKit docs |
 |---|---|---|
 | `@query` | Read data — cached, refreshable | [query](https://svelte.dev/docs/kit/remote-functions#query) |
@@ -103,16 +103,31 @@ FluidKit reflects on your decorated functions at import time — inspecting para
 | `@form` | Form actions — file uploads, progressive enhancement, redirects | [form](https://svelte.dev/docs/kit/remote-functions#form) |
 | `@prerender` | Build-time data fetching with optional runtime fallback | [prerender](https://svelte.dev/docs/kit/remote-functions#prerender) |
 
+
+
 ## CLI
+
 ```bash
-fluidkit init               # scaffold SvelteKit project with FluidKit wired in
-fluidkit dev    # run FastAPI + Vite together with HMR
-fluidkit build  # codegen + npm run build
+fluidkit init                # scaffold SvelteKit project with FluidKit wired in
+fluidkit dev                 # run FastAPI + Vite together with HMR
+fluidkit build               # codegen + npm run build
+fluidkit preview             # preview production build locally
+```
+
+No system Node.js required — FluidKit uses `nodejs-wheel` for all Node operations. npm, npx, and node are available through the CLI:
+
+```bash
+fluidkit install tailwindcss          # shorthand for npm install
+fluidkit install -D prettier          # install as dev dependency
+fluidkit npm run build                # any npm command
+fluidkit npx sv add tailwindcss       # any npx command
+fluidkit node scripts/seed.js         # run node directly
 ```
 
 
 
 ## Project config
+
 ```json
 // fluidkit.config.json
 {
@@ -125,4 +140,14 @@ fluidkit build  # codegen + npm run build
 }
 ```
 
-Flags override config. Config overrides defaults.
+> NOTE: Flags override config. Config overrides defaults.
+
+
+
+## Built with
+
+- [SvelteKit](https://svelte.dev/docs/kit) — frontend framework with remote functions
+- [FastAPI](https://fastapi.tiangolo.com/) — API layer and request handling
+- [Pydantic](https://docs.pydantic.dev/) — type extraction and validation
+- [Jurigged](https://github.com/breuleux/jurigged) — hot module reloading in dev mode
+- [nodejs-wheel](https://github.com/nicolo-ribaudo/nodejs-wheel) — bundled Node.js, no system install needed

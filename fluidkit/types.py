@@ -1,5 +1,6 @@
 import inspect
 from fastapi import UploadFile, Response
+from fluidkit.models import MutationType
 from typing import Any, Generic, TypeVar, ParamSpec, Callable, Generator
 
 
@@ -97,11 +98,11 @@ class RemoteProxy(Generic[T]):
 
         ctx = self._get_context_or_warn("refresh")
         if ctx is not None:
-            ctx.add_refresh(self._func_name, self._get_serializable_kwargs(), result)
+            ctx.add_mutation(MutationType.REFRESH, self._func_name, self._get_serializable_kwargs(), result)
 
         return result
 
     async def set(self, data: T) -> None:
         ctx = self._get_context_or_warn("set")
         if ctx is not None:
-            ctx.add_set(self._func_name, self._get_serializable_kwargs(), data)
+            ctx.add_mutation(MutationType.SET, self._func_name, self._get_serializable_kwargs(), data)

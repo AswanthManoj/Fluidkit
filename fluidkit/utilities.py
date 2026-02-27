@@ -29,6 +29,57 @@ _SCALARS = {
 }
 
 
+def _unwrap_optional(annotation) -> Any:
+    """If annotation is Optional[X] (i.e. Union[X, None] with one non-None), return X. Otherwise return as-is."""
+    if get_origin(annotation) is Union:
+        non_none = [a for a in get_args(annotation) if a is not type(None)]
+        if len(non_none) == 1:
+            return non_none[0]
+    return annotation
+
+
+def _warn_form_param(func_name: str, param_name: str, annotation) -> None:
+    """Emit warnings for form parameters that won't serialize well."""
+    from pydantic import BaseModel
+
+    unwrapped = _unwrap_optional(annotation)
+    origin = get_origin(unwrapped)
+
+    if isinstance(unwrapped, type) and issubclass(unwrapped, BaseModel):
+        logger.warning(
+            "@form '%s': parameter '%s' is a Pydantic model — "
+            "form fields only support flat primitives, files, and lists of those. "
+            "Consider using @command for complex model parameters.",
+            func_name, param_name
+        )
+    elif origin is dict:
+        logger.warning(
+            "@form '%s': parameter '%s' is a dict — "
+            "form fields do not support dict types. "
+            "Consider using @command instead.",
+            func_name, param_name
+        )
+    elif origin is list:
+        inner_args = get_args(unwrapped)
+        if inner_args and isinstance(inner_args[0], type) and issubclass(inner_args[0], BaseModel):
+            logger.warning(
+                "@form '%s': parameter '%s' is list[%s] — "
+                "form fields only support lists of primitives or FileUpload. "
+                "Consider using @command instead.",
+                func_name, param_name, inner_args[0].__name__
+            )
+
+    if get_origin(annotation) is Union:
+        non_none = [a for a in get_args(annotation) if a is not type(None)]
+        if len(non_none) > 1:
+            logger.warning(
+                "@form '%s': parameter '%s' has Union type %s — "
+                "form coercion is ambiguous for Union types, value will be returned as raw string. "
+                "Consider wrapping the Union in a Pydantic model and using @command instead.",
+                func_name, param_name, annotation
+            )
+
+
 def extract_metadata(func: Callable, decorator_type: DecoratorType):
     sig = inspect.signature(func)
 
@@ -39,70 +90,29 @@ def extract_metadata(func: Callable, decorator_type: DecoratorType):
     for param_name, param in sig.parameters.items():
         if param.annotation is RequestEvent:
             request_param_name = param_name
-        else:
-            if decorator_type == DecoratorType.FORM:
-                origin = get_origin(param.annotation)
-                
-                # Unwrap Optional to check inner type
-                annotation = param.annotation
-                if origin is Union:
-                    non_none = [a for a in get_args(annotation) if a is not type(None)]
-                    if len(non_none) == 1:
-                        annotation = non_none[0]
-                        origin = get_origin(annotation)
-                    elif len(non_none) > 1:
-                        logger.warning(
-                            "@form '%s': parameter '%s' has Union type %s — "
-                            "form coercion is ambiguous for Union types, value will be returned as raw string. "
-                            "Consider wrapping the Union in a Pydantic model and using @command instead.",
-                            func.__name__, param.name, param.annotation
-                        )
+            continue
 
-                # Check for invalid complex types
-                if isinstance(annotation, type) and issubclass(annotation, BaseModel):
-                    logger.warning(
-                        "@form '%s': parameter '%s' is a Pydantic model — "
-                        "form fields only support flat primitives, files, and lists of those. "
-                        "Consider using @command for complex model parameters.",
-                        func.__name__, param.name
-                    )
-                elif origin is dict:
-                    logger.warning(
-                        "@form '%s': parameter '%s' is a dict — "
-                        "form fields do not support dict types. "
-                        "Consider using @command instead.",
-                        func.__name__, param.name
-                    )
-                elif origin is list:
-                    inner_args = get_args(annotation)
-                    if inner_args:
-                        inner = inner_args[0]
-                        if isinstance(inner, type) and issubclass(inner, BaseModel):
-                            logger.warning(
-                                "@form '%s': parameter '%s' is list[%s] — "
-                                "form fields only support lists of primitives or FileUpload. "
-                                "Consider using @command instead.",
-                                func.__name__, param.name, inner.__name__
-                            )
-            
-            if decorator_type in (DecoratorType.QUERY, DecoratorType.COMMAND, DecoratorType.PRERENDER):
-                if normalize_types(param.annotation).base_type is BaseType.FILE:
-                    logger.warning(
-                        "@%s '%s': parameter '%s' is FileUpload — "
-                        "file uploads are only supported in @form. "
-                        "Consider changing the decorator to @form.",
-                        decorator_type.value, func.__name__, param.name
-                    )
+        if decorator_type == DecoratorType.FORM:
+            _warn_form_param(func.__name__, param_name, param.annotation)
 
-            parameters.append(
-                ParameterMetadata(
-                    name=param.name,
-                    default=param.default,
-                    annotation=normalize_types(param.annotation),
-                    required=param.default is inspect.Parameter.empty
+        if decorator_type in (DecoratorType.QUERY, DecoratorType.COMMAND, DecoratorType.PRERENDER):
+            if normalize_types(param.annotation).base_type is BaseType.FILE:
+                logger.warning(
+                    "@%s '%s': parameter '%s' is FileUpload — "
+                    "file uploads are only supported in @form. "
+                    "Consider changing the decorator to @form.",
+                    decorator_type.value, func.__name__, param_name
                 )
+
+        parameters.append(
+            ParameterMetadata(
+                name=param.name,
+                default=param.default,
+                annotation=normalize_types(param.annotation),
+                required=param.default is inspect.Parameter.empty
             )
-            filtered_params.append(param)
+        )
+        filtered_params.append(param)
 
     metadata = FunctionMetadata(
         name=func.__name__,
@@ -113,8 +123,9 @@ def extract_metadata(func: Callable, decorator_type: DecoratorType):
         file_path=inspect.getsourcefile(func),
         return_annotation=normalize_types(sig.return_annotation)
     )
-    
+
     return metadata, request_param_name, filtered_params, sig
+
 
 def setup_request_context(request: Request, allow_set_cookies: bool):
     """Setup request event and return cleanup token"""
@@ -122,10 +133,8 @@ def setup_request_context(request: Request, allow_set_cookies: bool):
         allow_set=allow_set_cookies,
         request_cookies=request.cookies
     )
-    
     request_event = RequestEvent(locals={}, cookies=cookies)
     token = set_request_event(request_event)
-    
     return request_event, cookies, token
 
 def generate_route_path(metadata: FunctionMetadata) -> str:
@@ -152,73 +161,53 @@ def inject_request_if_needed(sig, args, kwargs, request_param_name, request_even
 async def parse_request_data(request: Request, sig: inspect.Signature) -> dict:
     content_type = request.headers.get("content-type", "")
 
-    if "multipart/form-data" in content_type or "application/x-www-form-urlencoded" in content_type:
-        form = await request.form()
-        parsed = {}
-
-        for param_name, param in sig.parameters.items():
-            if param.annotation is RequestEvent:
-                continue
-
-            origin = get_origin(param.annotation)
-            
-            # Unwrap Optional first
-            annotation = param.annotation
-            if origin is Union:
-                non_none = [a for a in get_args(annotation) if a is not type(None)]
-                if len(non_none) == 1:
-                    annotation = non_none[0]
-                    origin = get_origin(annotation)
-
-            if origin is list:
-                values = form.getlist(param_name)
-                if not values:
-                    continue
-                inner_args = get_args(annotation)
-                inner_type = inner_args[0] if inner_args else str
-                parsed[param_name] = [_coerce_form_value(v, inner_type) for v in values]
-            else:
-                value = form.get(param_name)
-                if value is None:
-                    continue
-                parsed[param_name] = _coerce_form_value(value, annotation)
-
-        return parsed
-    else:
+    if "multipart/form-data" not in content_type and "application/x-www-form-urlencoded" not in content_type:
         return await request.json()
+
+    form = await request.form()
+    parsed = {}
+
+    for param_name, param in sig.parameters.items():
+        if param.annotation is RequestEvent:
+            continue
+
+        unwrapped = _unwrap_optional(param.annotation)
+        origin = get_origin(unwrapped)
+
+        if origin is list:
+            values = form.getlist(param_name)
+            if not values:
+                continue
+            inner_args = get_args(unwrapped)
+            inner_type = inner_args[0] if inner_args else str
+            parsed[param_name] = [_coerce_form_value(v, inner_type) for v in values]
+        else:
+            value = form.get(param_name)
+            if value is None:
+                continue
+            parsed[param_name] = _coerce_form_value(value, unwrapped)
+
+    return parsed
+
 
 def _coerce_form_value(value: Any, annotation: type) -> Any:
     from pydantic import BaseModel
     from fastapi import UploadFile as FastAPIUploadFile
 
-    # Unwrap Optional[X] -> X before any checks
-    origin = get_origin(annotation)
-    if origin is Union:
-        args = get_args(annotation)
-        non_none = [a for a in args if a is not type(None)]
-        if len(non_none) == 1:
-            annotation = non_none[0]
-            origin = get_origin(annotation)
-
-    # File — pass through as-is
     if isinstance(value, FastAPIUploadFile):
         return value
 
-    # Already not a string (shouldn't happen in form data, but guard anyway)
     if not isinstance(value, str):
         return value
 
     origin = get_origin(annotation)
 
-    # Pydantic model — arrives as JSON string
     if isinstance(annotation, type) and issubclass(annotation, BaseModel):
         return annotation(**json.loads(value))
 
-    # list or dict — arrives as JSON string
     if origin in (list, dict):
         return json.loads(value)
 
-    # Primitives — cast directly, never JSON parse
     if annotation is int:
         return int(value)
     if annotation is float:
@@ -226,8 +215,8 @@ def _coerce_form_value(value: Any, annotation: type) -> Any:
     if annotation is bool:
         return value.lower() in ('true', '1', 'yes')
 
-    # str, unknown, anything else — leave as-is
     return value
+
 
 def normalize_types(py_type: Any) -> FieldAnnotation:
     if py_type is inspect.Parameter.empty:

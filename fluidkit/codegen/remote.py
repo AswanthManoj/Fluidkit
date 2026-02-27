@@ -1,9 +1,10 @@
+import json
 import logging
 from pathlib import Path
 from typing import Dict, List, Set
 from fluidkit.utilities import generate_route_path
 from fluidkit.codegen.ts import GENERATED_FILE_WARNING, TSWriter, annotation_to_ts, module_to_namespace
-from fluidkit.models import FunctionMetadata, DecoratorType, ParameterMetadata, FieldAnnotation, BaseType, ContainerType
+from fluidkit.models import FunctionMetadata, DecoratorType, ParameterMetadata, FieldAnnotation
 
 
 logger = logging.getLogger(__name__)
@@ -11,7 +12,6 @@ logger = logging.getLogger(__name__)
 
 def generate_remote_files(
     functions: Dict[str, FunctionMetadata],
-    base_url: str = "http://localhost:8000",
 ) -> None:
     by_file: Dict[str, List[FunctionMetadata]] = {}
     for fn in functions.values():
@@ -19,7 +19,7 @@ def generate_remote_files(
             by_file.setdefault(fn.file_path, []).append(fn)
 
     for file_path, fns in by_file.items():
-        content = render_remote_file(fns, base_url)
+        content = render_remote_file(fns)
         if not content:
             continue
         out_path = file_path.replace(".py", ".remote.ts")
@@ -27,7 +27,7 @@ def generate_remote_files(
         logger.debug("generated %s", out_path)
 
 
-def render_remote_file(functions: List[FunctionMetadata], base_url: str) -> str:
+def render_remote_file(functions: List[FunctionMetadata]) -> str:
     functions = [f for f in functions if f.decorator_type != DecoratorType.PRERENDER]
     if not functions:
         return ""
@@ -40,8 +40,6 @@ def render_remote_file(functions: List[FunctionMetadata], base_url: str) -> str:
     w = TSWriter()
     w.line(GENERATED_FILE_WARNING)
     _render_imports(w, types, has_mutations, has_registrations, custom_types)
-    w.blank()
-    w.line(f'const BASE_URL = "{base_url}";')
 
     for fn in functions:
         w.blank()
@@ -107,6 +105,8 @@ def _render_imports(
     if registry_imports:
         w.line(f"import {{ {', '.join(registry_imports)} }} from '$fluidkit/registry';")
 
+    w.line("import { BASE_URL } from '$fluidkit/config';")
+
     if custom_types:
         by_namespace: Dict[str, List[str]] = {}
         for type_name, module in custom_types.items():
@@ -118,6 +118,7 @@ def _render_imports(
         for ns, type_names in sorted(by_namespace.items()):
             for type_name in sorted(type_names):
                 w.line(f"type {type_name} = {ns}.{type_name};")
+
 
 def _ts_params(parameters: List[ParameterMetadata]) -> str:
     return ", ".join(
@@ -133,8 +134,45 @@ def _ts_body(parameters: List[ParameterMetadata]) -> str:
 
 
 # =============================================================================
-# Shared block helpers
+# Shared helpers
 # =============================================================================
+
+def _build_signature(fn: FunctionMetadata, kind: str, *, param_style: str = "typed") -> str:
+    """
+    Build `export const name = kind(...async... => {`
+
+    param_style:
+      "typed"  — 1 param flat, 2+ destructured object (query/command)
+      "flat"   — always flat typed params, no destructuring (prerender)
+      "data"   — always untyped `(data)` when params exist (form)
+    """
+    if not fn.parameters:
+        return f"export const {fn.name} = {kind}(async () => {{"
+
+    unchecked = "'unchecked', "
+
+    if param_style == "data":
+        return f"export const {fn.name} = {kind}({unchecked}async (data) => {{"
+
+    if param_style == "flat" or len(fn.parameters) == 1:
+        return f"export const {fn.name} = {kind}({unchecked}async ({_ts_params(fn.parameters)}) => {{"
+
+    # 2+ params with destructuring (query/command)
+    destructuring = ", ".join(p.name for p in fn.parameters)
+    return f"export const {fn.name} = {kind}({unchecked}async ({{{destructuring}}}: {{{_ts_params(fn.parameters)}}}) => {{"
+
+
+def _render_fetch(w: TSWriter, route: str, params: List[ParameterMetadata], *, json_body: bool = True) -> None:
+    """Render the fetch() call. Assumes `_fk_cookies` is already in scope."""
+    body = _ts_body(params) if json_body else "_fk_form"
+    with w.block(f"const _fk_res = await fetch(`${{BASE_URL}}{route}`, {{", "});"):
+        w.line("method: 'POST',")
+        with w.block("headers: {", "},"):
+            if json_body:
+                w.line("'Content-Type': 'application/json',")
+            w.line("'Cookie': _fk_cookies.getAll().map(c => `${c.name}=${c.value}`).join('; '),")
+        w.line(f"body: {body},")
+
 
 def _render_error_block(w: TSWriter) -> None:
     with w.block("if (!_fk_res.ok) {", "}"):
@@ -156,6 +194,25 @@ def _render_mutations_block(w: TSWriter) -> None:
         w.line("if (_fk_fn) _fk_fn(_fk_args, _fk_data);")
 
 
+def _render_form_data_block(w: TSWriter) -> None:
+    w.line("const _fk_form = new FormData();")
+    with w.block("for (const [key, value] of Object.entries(data)) {", "}"):
+        w.line("if (Array.isArray(value)) {")
+        w.indent()
+        w.line("for (const v of value) _fk_form.append(key, v as string | Blob);")
+        w.dedent()
+        w.line("} else {")
+        w.indent()
+        w.line("_fk_form.append(key, value as string | Blob);")
+        w.dedent()
+        w.line("}")
+
+
+def _render_parse_and_return(w: TSWriter, return_type: str) -> None:
+    w.line("const _fk_body = await _fk_res.json();")
+    w.line(f"return _fk_body.result as {return_type};")
+
+
 # =============================================================================
 # Renderers
 # =============================================================================
@@ -163,36 +220,48 @@ def _render_mutations_block(w: TSWriter) -> None:
 def _render_query(w: TSWriter, fn: FunctionMetadata) -> None:
     route = generate_route_path(fn)
     return_type = annotation_to_ts(fn.return_annotation)
-    if fn.parameters:
-        if len(fn.parameters) == 1:
-            signature = f"export const {fn.name} = query('unchecked', async ({_ts_params(fn.parameters)}) => {{"
-        else:
-            destructuring_pattern = ", ".join(p.name for p in fn.parameters)
-            signature = f"export const {fn.name} = query('unchecked', async ({{{destructuring_pattern}}}: {{{_ts_params(fn.parameters)}}}) => {{"
-    else:
-        signature = f"export const {fn.name} = query(async () => {{"
-    
-    with w.block(signature, "});"):
+    with w.block(_build_signature(fn, "query"), "});"):
         w.line("const { cookies: _fk_cookies } = getRequestEvent();")
-        with w.block(f"const _fk_res = await fetch(`${{BASE_URL}}{route}`, {{", "});"):
-            w.line("method: 'POST',")
-            with w.block("headers: {", "},"):
-                w.line("'Content-Type': 'application/json',")
-                w.line("'Cookie': _fk_cookies.getAll().map(c => `${c.name}=${c.value}`).join('; '),")
-            w.line(f"body: {_ts_body(fn.parameters)},")
+        _render_fetch(w, route, fn.parameters)
+        _render_error_block(w)
+        _render_parse_and_return(w, return_type)
+
+
+def _render_command(w: TSWriter, fn: FunctionMetadata) -> None:
+    route = generate_route_path(fn)
+    return_type = annotation_to_ts(fn.return_annotation)
+    with w.block(_build_signature(fn, "command"), "});"):
+        w.line("const { cookies: _fk_cookies } = getRequestEvent();")
+        _render_fetch(w, route, fn.parameters)
+        _render_cookie_forward_block(w)
         _render_error_block(w)
         w.line("const _fk_body = await _fk_res.json();")
+        _render_mutations_block(w)
+        w.line(f"return _fk_body.result as {return_type};")
+
+
+def _render_form(w: TSWriter, fn: FunctionMetadata) -> None:
+    route = generate_route_path(fn)
+    return_type = annotation_to_ts(fn.return_annotation)
+    with w.block(_build_signature(fn, "form", param_style="data"), "});"):
+        w.line("const { cookies: _fk_cookies } = getRequestEvent();")
+        w.blank()
+        _render_form_data_block(w)
+        w.blank()
+        _render_fetch(w, route, fn.parameters, json_body=False)
+        w.blank()
+        _render_cookie_forward_block(w)
+        _render_error_block(w)
+        w.line("const _fk_body = await _fk_res.json();")
+        w.line("if ('redirect' in _fk_body) redirect(_fk_body.redirect.status, _fk_body.redirect.location);")
+        _render_mutations_block(w)
         w.line(f"return _fk_body.result as {return_type};")
 
 
 def _render_prerender(w: TSWriter, fn: FunctionMetadata) -> None:
     route = generate_route_path(fn)
     return_type = annotation_to_ts(fn.return_annotation)
-    signature = (
-        f"export const {fn.name} = prerender('unchecked', async ({_ts_params(fn.parameters)}) => {{"
-        if fn.parameters
-        else f"export const {fn.name} = prerender(async () => {{"
-    )
+    signature = _build_signature(fn, "prerender", param_style="flat")
 
     has_options = fn.prerender_dynamic or (
         fn.prerender_inputs is not None and not callable(fn.prerender_inputs)
@@ -206,15 +275,9 @@ def _render_prerender(w: TSWriter, fn: FunctionMetadata) -> None:
 
     def _body():
         w.line("const { cookies: _fk_cookies } = getRequestEvent();")
-        with w.block(f"const _fk_res = await fetch(`${{BASE_URL}}{route}`, {{", "});"):
-            w.line("method: 'POST',")
-            with w.block("headers: {", "},"):
-                w.line("'Content-Type': 'application/json',")
-                w.line("'Cookie': _fk_cookies.getAll().map(c => `${c.name}=${c.value}`).join('; '),")
-            w.line(f"body: {_ts_body(fn.parameters)},")
+        _render_fetch(w, route, fn.parameters)
         _render_error_block(w)
-        w.line("const _fk_body = await _fk_res.json();")
-        w.line(f"return _fk_body.result as {return_type};")
+        _render_parse_and_return(w, return_type)
 
     if has_options:
         w.line(signature)
@@ -223,79 +286,12 @@ def _render_prerender(w: TSWriter, fn: FunctionMetadata) -> None:
         w.dedent()
         with w.block("}, {", "});"):
             if fn.prerender_inputs is not None and not callable(fn.prerender_inputs):
-                import json
                 w.line(f"inputs: () => {json.dumps(fn.prerender_inputs)},")
             if fn.prerender_dynamic:
                 w.line("dynamic: true,")
     else:
         with w.block(signature, "});"):
             _body()
-
-
-def _render_command(w: TSWriter, fn: FunctionMetadata) -> None:
-    route = generate_route_path(fn)
-    return_type = annotation_to_ts(fn.return_annotation)
-
-    if fn.parameters:
-        if len(fn.parameters) == 1:
-            signature = f"export const {fn.name} = command('unchecked', async ({_ts_params(fn.parameters)}) => {{"
-        else:
-            destructuring_pattern = ", ".join(p.name for p in fn.parameters)
-            signature = f"export const {fn.name} = command('unchecked', async ({{{destructuring_pattern}}}: {{{_ts_params(fn.parameters)}}}) => {{"
-    else:
-        signature = f"export const {fn.name} = command(async () => {{"
-
-    with w.block(signature, "});"):
-        w.line("const { cookies: _fk_cookies } = getRequestEvent();")
-        with w.block(f"const _fk_res = await fetch(`${{BASE_URL}}{route}`, {{", "});"):
-            w.line("method: 'POST',")
-            with w.block("headers: {", "},"):
-                w.line("'Content-Type': 'application/json',")
-                w.line("'Cookie': _fk_cookies.getAll().map(c => `${c.name}=${c.value}`).join('; '),")
-            w.line(f"body: {_ts_body(fn.parameters)},")
-        _render_cookie_forward_block(w)
-        _render_error_block(w)
-        w.line("const _fk_body = await _fk_res.json();")
-        _render_mutations_block(w)
-        w.line(f"return _fk_body.result as {return_type};")
-
-
-def _render_form(w: TSWriter, fn: FunctionMetadata) -> None:
-    route = generate_route_path(fn)
-    return_type = annotation_to_ts(fn.return_annotation)
-
-    if fn.parameters:
-        signature = f"export const {fn.name} = form('unchecked', async (data) => {{"
-    else:
-        signature = f"export const {fn.name} = form(async () => {{"
-
-    with w.block(signature, "});"):
-        w.line("const { cookies: _fk_cookies } = getRequestEvent();")
-        w.blank()
-        w.line("const _fk_form = new FormData();")
-        with w.block("for (const [key, value] of Object.entries(data)) {", "}"):
-            w.line("if (Array.isArray(value)) {")
-            w.indent()
-            w.line("for (const v of value) _fk_form.append(key, v as string | Blob);")
-            w.dedent()
-            w.line("} else {")
-            w.indent()
-            w.line("_fk_form.append(key, value as string | Blob);")
-            w.dedent()
-            w.line("}")
-        w.blank()
-        with w.block(f"const _fk_res = await fetch(`${{BASE_URL}}{route}`, {{", "});"):
-            w.line("method: 'POST',")
-            with w.block("headers: {", "},"):
-                w.line("'Cookie': _fk_cookies.getAll().map(c => `${c.name}=${c.value}`).join('; '),")
-            w.line("body: _fk_form,")
-        w.blank()
-        _render_cookie_forward_block(w)
-        _render_error_block(w)
-        w.line("const _fk_body = await _fk_res.json();")
-        w.line("if ('redirect' in _fk_body) redirect(_fk_body.redirect.status, _fk_body.redirect.location);")
-        _render_mutations_block(w)
-        w.line(f"return _fk_body.result as {return_type};")
 
 
 def _render_registration(w: TSWriter, fn: FunctionMetadata) -> None:
@@ -307,4 +303,3 @@ def _render_registration(w: TSWriter, fn: FunctionMetadata) -> None:
 
     with w.block(f"registerRemoteFunction('{key}', (_fk_args: any, _fk_data: any) => {{", "});"):
         w.line(call)
-

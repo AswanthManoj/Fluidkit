@@ -74,7 +74,8 @@ def setup_logging() -> None:
 
 # ── Node helpers ──────────────────────────────────────────────────────────────
 
-def _get_node_tool(name: str):
+def get_node_tool(name: str):
+    """Get a nodejs-wheel tool callable (npm, npx, node) or exit with install instructions."""
     try:
         import nodejs_wheel
         return getattr(nodejs_wheel, name)
@@ -83,12 +84,31 @@ def _get_node_tool(name: str):
         sys.exit(1)
 
 
-def get_npx():
-    return _get_node_tool("npx")
+def run_node_tool(name: str, args: list[str]) -> None:
+    """Run an npm/npx/node command via nodejs-wheel, forwarding exit code."""
+    tool = get_node_tool(name)
+    result = tool(args, return_completed_process=True)
+    if result.returncode != 0:
+        raise SystemExit(result.returncode)
 
 
-def get_npm():
-    return _get_node_tool("npm")
+async def run_node_tool_async(name: str, args: list[str]):
+    """
+    Start an npm/npx/node command as an async subprocess.
+    Spawns via sys.executable so it works cross-platform,
+    including Windows where npm is a .cmd batch file.
+    """
+    import asyncio
+    arg_list = ", ".join(repr(a) for a in args)
+    script = (
+        f"import sys; import nodejs_wheel; "
+        f"sys.exit(nodejs_wheel.{name}([{arg_list}], return_completed_process=True).returncode)"
+    )
+    return await asyncio.create_subprocess_exec(
+        sys.executable, "-c", script,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
 
 
 def display_host(config: dict) -> str:

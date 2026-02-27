@@ -46,7 +46,11 @@ Example: user: '{"name":"John","email":"john@example.com","age":30}'
 def _error_response(e: Exception, status: int = 500, message: str | None = None) -> JSONResponse:
     if status == 500:
         logger.exception(e)
-    content = create_error_response(e=e if status == 500 else None, message=message)
+    content = create_error_response(
+        e=e if status == 500 else None,
+        message=message,
+        dev=fluidkit_registry.dev,
+    )
     return JSONResponse(
         status_code=status,
         content=content.model_dump(by_alias=True, exclude_none=True),
@@ -126,7 +130,7 @@ def _make_remote(
         except HTTPError as e:
             return JSONResponse(
                 status_code=e.status,
-                content=create_error_response(message=e.message)
+                content=create_error_response(message=e.message, dev=fluidkit_registry.dev)
                     .model_dump(by_alias=True, exclude_none=True),
             )
 

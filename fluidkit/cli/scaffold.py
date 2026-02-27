@@ -1,7 +1,7 @@
 import sys
 import shutil
 from pathlib import Path
-from .utils import echo, _COLORS, get_npx, get_npm
+from .utils import echo, _COLORS, get_node_tool
 from .config import write_default_config, load_config
 from .patch import patch_svelte_config, patch_vite_config, patch_svelte_experimental
 
@@ -47,8 +47,8 @@ def write_gitignore(project_root: str = ".") -> None:
 
 
 def scaffold_project():
-    npx = get_npx()
-    npm = get_npm()
+    npx = get_node_tool("npx")
+    npm = get_node_tool("npm")
 
     result = npx(
         ["sv", "create", ".", "--no-dir-check", "--no-install", "--template", "minimal"],

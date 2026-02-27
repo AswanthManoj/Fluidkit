@@ -5,7 +5,7 @@ import importlib.util
 from pathlib import Path
 from fluidkit import __version__
 from fluidkit.registry import fluidkit_registry
-from .utils import setup_logging, header, hmr_update, echo, display_host, _COLORS
+from .utils import setup_logging, header, hmr_update, echo, display_host, run_node_tool, run_node_tool_async, _COLORS
 
 
 def load_entry(entry: str) -> None:
@@ -74,11 +74,7 @@ async def _run_servers(config: dict, npm_command: str, hmr: bool = True) -> None
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
 
-    proc = await asyncio.create_subprocess_exec(
-        "npm", "run", npm_command,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    proc = await run_node_tool_async("npm", ["run", npm_command])
 
     try:
         await asyncio.gather(
@@ -116,7 +112,6 @@ def run_preview(config: dict) -> None:
 
 
 def run_build(config: dict) -> None:
-    import subprocess
     from fluidkit.codegen import generate
 
     load_entry(config["entry"])
@@ -129,6 +124,4 @@ def run_build(config: dict) -> None:
     )
     echo("fluid", "codegen done")
 
-    result = subprocess.run(["npm", "run", "build"])
-    if result.returncode != 0:
-        raise SystemExit(result.returncode)
+    run_node_tool("npm", ["run", "build"])
