@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fluidkit"
-version = "1.0.1"
+version = "1.0.5"
 description = "Python backend, SvelteKit frontend, zero boilerplate in between."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -31,9 +31,6 @@ dependencies = [
 
 [project.scripts]
 fluidkit = "fluidkit.cli.main:app"
-
-[project.optional-dependencies]
-cli = ["typer"]
 
 [project.urls]
 Homepage = "https://github.com/AswanthManoj/Fluidkit"

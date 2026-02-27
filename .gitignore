@@ -35,10 +35,5 @@ Thumbs.db
 
 
 # Custom ignore
-.fluidkit/
-fluid.config.json
-my-test-app
-src/
-sse.md
 doc.py
 project_docs.md

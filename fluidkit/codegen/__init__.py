@@ -14,11 +14,6 @@ logger = logging.getLogger(__name__)
 def _warn_untyped(functions: list[FunctionMetadata]):
     for fn in functions:
         untyped = [p.name for p in fn.parameters if p.annotation.base_type is BaseType.ANY]
-
-        # This is obvious from the return type in typescript, so we don't need to warn about it.
-        # if fn.return_annotation.base_type is BaseType.ANY:
-        #     untyped.append("return")
-        
         if untyped:
             logger.warning(
                 "%s.%s has unannotated parameters: %s — generated types will be 'any'",
@@ -32,6 +27,15 @@ def _has_custom_types(metadata: FunctionMetadata) -> bool:
             return True
         return any(_check(a) for a in ann.args)
     return _check(metadata.return_annotation) or any(_check(p.annotation) for p in metadata.parameters)
+
+
+def _write_config_ts(base_url: str, schema_output: str) -> None:
+    config_path = Path(schema_output) / "config.ts"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        f'{GENERATED_FILE_WARNING}export const BASE_URL = "{base_url}";\n',
+        encoding="utf-8",
+    )
 
 
 def build_schema_ts(functions: list[FunctionMetadata]) -> str:
@@ -70,7 +74,7 @@ def _run_codegen(metadata: FunctionMetadata, registry, base_url: str, schema_out
             remote_ts = Path(metadata.file_path.replace(".py", ".remote.ts"))
             remote_ts.unlink(missing_ok=True)
         else:
-            generate_remote_files(functions_for_file, base_url=base_url)
+            generate_remote_files(functions_for_file)
 
     if _has_custom_types(metadata):
         schema_ts = build_schema_ts(list(registry.functions.values()))
@@ -92,10 +96,14 @@ def generate(
 ) -> None:
     """
     Generate all FluidKit artifacts:
+    - $fluidkit/config.ts with BASE_URL
     - .remote.ts files colocated with Python source
     - $fluidkit/schema.ts with all Pydantic model interfaces
     """
-    generate_remote_files(functions, base_url=base_url)
+    _write_config_ts(base_url, schema_output)
+
+    generate_remote_files(functions)
+
     schema_ts = build_schema_ts(list(functions.values()))
     schema_path = Path(schema_output) / "schema.ts"
     schema_path.parent.mkdir(parents=True, exist_ok=True)

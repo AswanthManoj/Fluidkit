@@ -1,11 +1,7 @@
-import uuid
 import inspect
 from enum import Enum
-from fastapi import HTTPException
-from datetime import datetime, date
-from dataclasses import dataclass, field
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Any, Dict, Optional, List, Generic, TypeVar, Union, get_origin, get_args
+from typing import Any, Dict, Optional, List, Generic, TypeVar
 
 
 class BaseType(str, Enum):
@@ -158,10 +154,9 @@ def create_redirect_response(status: int, location: str) -> RedirectResponse:
     redirect_data = RedirectData(status=status, location=location)
     return RedirectResponse(redirect=redirect_data, __fluidkit=FluidKitMetadata())
 
-def create_error_response(e: Exception | None = None, message: str | None = None) -> UnhandledErrorResponse:
+def create_error_response(e: Exception | None = None, message: str | None = None, *, dev: bool = False) -> UnhandledErrorResponse:
     """Create an error response, including details in development mode"""
-    from fluidkit.registry import fluidkit_registry
-    if e is not None and fluidkit_registry.dev:
+    if e is not None and dev:
         import traceback
         return UnhandledErrorResponse(
             message=str(e),
