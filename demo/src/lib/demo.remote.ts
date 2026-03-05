@@ -35,17 +35,15 @@ export const like_post = command('unchecked', async (post_id: number) => {
     },
     body: JSON.stringify({ post_id }),
   });
-  for (const _fk_sc of _fk_res.headers.getSetCookie()) {
-    const [_fk_nv] = _fk_sc.split(';');
-    const [_fk_name, _fk_val] = _fk_nv.split('=');
-    _fk_cookies.set(_fk_name.trim(), _fk_val?.trim() ?? '', { path: '/' });
-  }
   if (!_fk_res.ok) {
     const _fk_err = await _fk_res.json();
     if (_fk_err.__fluidkit_error) console.error(_fk_err.__fluidkit_error.traceback);
     error(_fk_res.status, _fk_err.message ?? 'Unexpected error');
   }
   const _fk_body = await _fk_res.json();
+  for (const { name: _fk_cn, value: _fk_cv, ..._fk_co } of _fk_body.__fluidkit?.cookies ?? []) {
+    _fk_cookies.set(_fk_cn, _fk_cv, _fk_co);
+  }
   for (const { key: _fk_key, args: _fk_args, data: _fk_data } of _fk_body.__fluidkit?.mutations ?? []) {
     const _fk_fn = getRemoteFunction(_fk_key);
     if (_fk_fn) _fk_fn(_fk_args, _fk_data);
@@ -73,17 +71,15 @@ export const add_post = form('unchecked', async (data) => {
     body: _fk_form,
   });
 
-  for (const _fk_sc of _fk_res.headers.getSetCookie()) {
-    const [_fk_nv] = _fk_sc.split(';');
-    const [_fk_name, _fk_val] = _fk_nv.split('=');
-    _fk_cookies.set(_fk_name.trim(), _fk_val?.trim() ?? '', { path: '/' });
-  }
   if (!_fk_res.ok) {
     const _fk_err = await _fk_res.json();
     if (_fk_err.__fluidkit_error) console.error(_fk_err.__fluidkit_error.traceback);
     error(_fk_res.status, _fk_err.message ?? 'Unexpected error');
   }
   const _fk_body = await _fk_res.json();
+  for (const { name: _fk_cn, value: _fk_cv, ..._fk_co } of _fk_body.__fluidkit?.cookies ?? []) {
+    _fk_cookies.set(_fk_cn, _fk_cv, _fk_co);
+  }
   if ('redirect' in _fk_body) redirect(_fk_body.redirect.status, _fk_body.redirect.location);
   for (const { key: _fk_key, args: _fk_args, data: _fk_data } of _fk_body.__fluidkit?.mutations ?? []) {
     const _fk_fn = getRemoteFunction(_fk_key);

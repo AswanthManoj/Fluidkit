@@ -1,5 +1,5 @@
 import inspect
-from fastapi import UploadFile, Response
+from fastapi import UploadFile
 from fluidkit.models import MutationType
 from typing import Any, Generic, TypeVar, ParamSpec, Callable, Generator
 
@@ -9,8 +9,18 @@ P = ParamSpec('P')
 
 
 class Cookies:
+    _OPTION_MAP = {
+        "path": "path",
+        "secure": "secure",
+        "domain": "domain",
+        "max_age": "maxAge",
+        "expires": "expires",
+        "httponly": "httpOnly",
+        "samesite": "sameSite",
+    }
+    
     def __init__(self, request_cookies: dict, allow_set: bool = True) -> None:
-        self._cookies_to_set = []
+        self._cookies_to_set: list[tuple[str, str, dict]] = []
         self.allow_set = allow_set
         self._request_cookies = request_cookies
 
@@ -23,16 +33,22 @@ class Cookies:
             raise RuntimeError("Cannot set cookies in @query or @prerender")
         self._cookies_to_set.append((name, value, kwargs))
 
-    def apply_to_response(self, response: Response) -> None:
-        """Apply all set_cookie calls to FastAPI Response"""
+    def serialize(self) -> list[dict]:
+        """Serialize cookie-set instructions as JSON-safe dicts for the response payload."""
+        result = []
         for name, value, kwargs in self._cookies_to_set:
-            response.set_cookie(name, value, **kwargs)
+            entry = {"name": name, "value": value}
+            for py_key, js_key in self._OPTION_MAP.items():
+                if py_key in kwargs:
+                    entry[js_key] = kwargs[py_key]
+            result.append(entry)
+        return result
 
 
 class RequestEvent:
-    def __init__(self, cookies: Cookies, locals: dict):
-        self.cookies = cookies
-        self.locals = locals
+    def __init__(self, cookies: Cookies, locals: dict[str, Any]):
+        self.cookies: Cookies = cookies
+        self.locals: dict[str, Any] = locals
 
 
 class FileUpload(UploadFile):

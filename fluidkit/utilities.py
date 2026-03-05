@@ -144,11 +144,9 @@ def generate_route_path(metadata: FunctionMetadata) -> str:
     module_path = module.replace('.', '/')
     return f"/remote/{module_path}/{metadata.name}"
 
-def build_json_response(response_data: QueryResponse|CommandResponse|RedirectResponse, cookies: Cookies):
+def build_json_response(response_data: QueryResponse|CommandResponse|RedirectResponse):
     """Build JSONResponse with cookies applied"""
-    response = JSONResponse(content=response_data.model_dump(by_alias=True))
-    cookies.apply_to_response(response)
-    return response
+    return JSONResponse(content=response_data.model_dump(by_alias=True))
 
 def inject_request_if_needed(sig, args, kwargs, request_param_name, request_event):
     """Inject request_event if param exists and not already provided"""

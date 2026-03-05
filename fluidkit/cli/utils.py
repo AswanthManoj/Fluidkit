@@ -32,6 +32,17 @@ def hmr_update(op: str) -> None:
     op_str = str(op)
     if op_str.startswith("Watch"):
         return
+
+    # Skip third-party module noise (websockets, uvicorn, etc.)
+    parts = op_str.split()
+    if len(parts) >= 2:
+        module_root = parts[1].split(".")[0]
+        mod = sys.modules.get(module_root)
+        if mod:
+            mod_file = getattr(mod, "__file__", "") or ""
+            if "site-packages" in mod_file or ".venv" in mod_file:
+                return
+
     if op_str.startswith("Run"):
         color = _COLORS["hmr"]
     elif op_str.startswith("Delete"):
@@ -73,6 +84,14 @@ def setup_logging() -> None:
 
 
 # ── Node helpers ──────────────────────────────────────────────────────────────
+
+def ensure_node_modules() -> None:
+    """Auto-install npm dependencies if node_modules is missing."""
+    from pathlib import Path
+    if not Path("node_modules").exists():
+        echo("fluid", "node_modules not found, running npm install...", _COLORS["warn"])
+        run_node_tool("npm", ["install"])
+
 
 def get_node_tool(name: str):
     """Get a nodejs-wheel tool callable (npm, npx, node) or exit with install instructions."""

@@ -8,7 +8,7 @@ DEFAULT_CONFIG = {
     "backend_port": 8000,
     "frontend_port": 5173,
     "schema_output": "src/lib/fluidkit",
-    "watch_pattern": "./*.py"
+    "watch_pattern": "src/**/*.py"
 }
 
 

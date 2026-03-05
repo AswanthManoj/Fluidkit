@@ -28,6 +28,7 @@ class DecoratorType(str, Enum):
     QUERY = "query"
     COMMAND = "command"
     PRERENDER = "prerender"
+    QUERY_BATCH = "query_batch"
 
 class MutationType(str, Enum):
     SET = "set"
@@ -46,7 +47,8 @@ class MutationEntry(BaseModel):
     mutation_type: MutationType
 
 class FluidKitMetadata(BaseModel):
-    """Metadata for single-flight mutations"""
+    """Metadata for single-flight mutations and cookie instructions"""
+    cookies: List[dict] = Field(default_factory=list)
     mutations: List[MutationEntry] = Field(default_factory=list)
 
 class FieldAnnotation(BaseModel):
@@ -89,6 +91,10 @@ T = TypeVar('T')
 class QueryResponse(BaseModel, Generic[T]):
     """Response for @query and @prerender"""
     result: T
+
+class BatchQueryResponse(BaseModel):
+    """Response for @query.batch"""
+    results: List[Any]
 
 class CommandResponse(BaseModel, Generic[T]):
     """Response for @command and @form (success)"""
@@ -142,17 +148,27 @@ def create_query_response(result: Any) -> QueryResponse:
     """Create a query response"""
     return QueryResponse(result=result)
 
+def create_batch_query_response(results: List[Any]) -> BatchQueryResponse:
+    """Create a batch query response"""
+    return BatchQueryResponse(results=results)
+
 def create_command_response(
     result: Any,
-    mutations: List[MutationEntry] = None
+    mutations: List[MutationEntry] = None,
+    cookies: List[dict] = None,
 ) -> CommandResponse:
-    """Create a command response with optional mutations"""
-    metadata = FluidKitMetadata(mutations=mutations or [])
+    """Create a command response with optional mutations and cookie instructions"""
+    metadata = FluidKitMetadata(mutations=mutations or [], cookies=cookies or [])
     return CommandResponse(result=result, __fluidkit=metadata)
 
-def create_redirect_response(status: int, location: str) -> RedirectResponse:
+def create_redirect_response(
+    status: int,
+    location: str,
+    cookies: List[dict] = None,
+) -> RedirectResponse:
     redirect_data = RedirectData(status=status, location=location)
-    return RedirectResponse(redirect=redirect_data, __fluidkit=FluidKitMetadata())
+    metadata = FluidKitMetadata(cookies=cookies or [])
+    return RedirectResponse(redirect=redirect_data, __fluidkit=metadata)
 
 def create_error_response(e: Exception | None = None, message: str | None = None, *, dev: bool = False) -> UnhandledErrorResponse:
     """Create an error response, including details in development mode"""
