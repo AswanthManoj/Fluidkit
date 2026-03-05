@@ -9,8 +9,21 @@ export interface MutationEntry {
   mutation_type: 'refresh' | 'set';
 }
 
+export interface CookieInstruction {
+  name: string;
+  value: string;
+  path?: string;
+  httpOnly?: boolean;
+  secure?: boolean;
+  sameSite?: 'lax' | 'strict' | 'none';
+  maxAge?: number;
+  domain?: string;
+  expires?: string;
+}
+
 export interface FluidKitMeta {
   mutations: MutationEntry[];
+  cookies: CookieInstruction[];
 }
 
 export interface CommandResponse<T> {

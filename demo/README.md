@@ -15,7 +15,7 @@ To recreate this project with the same configuration:
 
 ```sh
 # recreate this project
-npx sv create --template minimal --types ts --add prettier tailwindcss="plugins:typography" --no-install .
+npx sv@0.12.5 create --template minimal --types ts --add prettier tailwindcss="plugins:typography" sveltekit-adapter="adapter:node" --no-install .
 ```
 
 ## Developing

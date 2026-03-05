@@ -1,6 +1,11 @@
-from typing import List, Any
+from __future__ import annotations
 from contextvars import ContextVar
+from typing import List, Any, TYPE_CHECKING
 from fluidkit.models import MutationType, MutationEntry
+
+
+if TYPE_CHECKING:
+    from fluidkit.types import RequestEvent
 
 
 class _ContextAccessor:
@@ -51,6 +56,10 @@ get_context = _current_context.get
 set_context = _current_context.set
 reset_context = _current_context.reset
 
-get_request_event = _current_request.get
 set_request_event = _current_request.set
 reset_request_event = _current_request.reset
+
+
+def get_request_event() -> RequestEvent:
+    """Get the current RequestEvent. Available inside all remote function handlers."""
+    return _current_request.get()

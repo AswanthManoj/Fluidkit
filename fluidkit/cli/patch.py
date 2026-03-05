@@ -276,37 +276,34 @@ def patch_vite_config(project_root: str = ".", frontend_port: int = 5173) -> boo
         return False
 
     original = config_path.read_text(encoding="utf-8")
+    patched = _patch_vite_port_block(original, "server", frontend_port)
+    patched = _patch_vite_port_block(patched, "preview", frontend_port)
 
-    # Case 1: port already exists — check if stale
-    existing = re.search(r'port\s*:\s*(\d+)', original)
+    if patched != original:
+        config_path.write_text(patched, encoding="utf-8")
+    return True
+
+
+def _patch_vite_port_block(source: str, block_name: str, port: int) -> str:
+    # Case 1: block with port exists — update if stale
+    existing = re.search(rf'{block_name}\s*:\s*\{{[^}}]*port\s*:\s*(\d+)', source, re.DOTALL)
     if existing:
-        if int(existing.group(1)) == frontend_port:
-            return True
-        patched = original[:existing.start(1)] + str(frontend_port) + original[existing.end(1):]
-        config_path.write_text(patched, encoding="utf-8")
-        return True
+        if int(existing.group(1)) == port:
+            return source
+        return source[:existing.start(1)] + str(port) + source[existing.end(1):]
 
-    # Case 2: server block exists but no port — inject inside
-    server_match = re.search(r'server\s*:\s*\{', original)
-    if server_match:
-        insert_at = server_match.end()
-        patched = original[:insert_at] + f"\n\t\tport: {frontend_port}," + original[insert_at:]
-        config_path.write_text(patched, encoding="utf-8")
-        return True
+    # Case 2: block exists but no port — inject inside
+    block_match = re.search(rf'{block_name}\s*:\s*\{{', source)
+    if block_match:
+        insert_at = block_match.end()
+        return source[:insert_at] + f"\n\t\tport: {port}," + source[insert_at:]
 
-    # Case 3: no server block — inject before closing } of defineConfig
-    define_close = re.search(r'(\})\s*\)\s*;?\s*$', original, re.DOTALL)
+    # Case 3: no block — inject before closing } of defineConfig
+    define_close = re.search(r'(\})\s*\)\s*;?\s*$', source, re.DOTALL)
     if define_close:
         insert_at = define_close.start(1)
-        before = original[:insert_at].rstrip()
+        before = source[:insert_at].rstrip()
         comma = ',' if before and before[-1] not in (',', '{') else ''
-        patched = (
-            before
-            + comma
-            + f"\n\tserver: {{\n\t\tport: {frontend_port}\n\t}}\n"
-            + original[insert_at:]
-        )
-        config_path.write_text(patched, encoding="utf-8")
-        return True
+        return before + comma + f"\n\t{block_name}: {{\n\t\tport: {port}\n\t}}\n" + source[insert_at:]
 
-    return False
+    return source

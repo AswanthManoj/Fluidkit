@@ -16,9 +16,11 @@ def _apply_patches(config: dict) -> None:
 
 
 @app.command()
-def init():
+def init(
+    folder: str = typer.Argument(None, help="Project folder (optional, defaults to current directory)"),
+):
     """Scaffold a new FluidKit + SvelteKit project."""
-    scaffold_project()
+    scaffold_project(folder)
 
 
 @app.command()

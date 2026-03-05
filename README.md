@@ -104,6 +104,14 @@ FluidKit reflects on your decorated functions at import time — inspecting para
 | `@prerender` | Build-time data fetching with optional runtime fallback | [prerender](https://svelte.dev/docs/kit/remote-functions#prerender) |
 
 
+## Documentation
+
+- [Getting Started](docs/quickstart.md)
+- [Remote Functions](docs/remote_functions.md) — query, form, command, prerender
+- [CLI](docs/cli.md)
+- [Configuration](docs/config.md)
+- [Examples](docs/examples.md)
+
 
 ## CLI
 
@@ -136,7 +144,7 @@ fluidkit node scripts/seed.js         # run node directly
   "backend_port": 8000,
   "frontend_port": 5173,
   "schema_output": "src/lib/fluidkit",
-  "watch_pattern": "./*.py"
+  "watch_pattern": "src/**/*.py"
 }
 ```
 

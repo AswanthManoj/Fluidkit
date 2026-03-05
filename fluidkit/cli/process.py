@@ -130,6 +130,8 @@ def run_preview(config: dict) -> None:
 
 
 def run_build(config: dict) -> None:
+    import uvicorn
+    import threading
     from fluidkit.codegen import generate
 
     load_entry(config["entry"])
@@ -142,4 +144,22 @@ def run_build(config: dict) -> None:
     )
     echo("fluid", "codegen done")
 
-    run_node_tool("npm", ["run", "build"])
+    setup_logging()
+    server = uvicorn.Server(uvicorn.Config(
+        fluidkit_registry.app,
+        host="localhost",
+        port=config["backend_port"],
+        log_config=None,
+    ))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+
+    import time
+    while not server.started:
+        time.sleep(0.1)
+
+    try:
+        run_node_tool("npm", ["run", "build"])
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)

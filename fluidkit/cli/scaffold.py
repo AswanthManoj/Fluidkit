@@ -46,7 +46,13 @@ def write_gitignore(project_root: str = ".") -> None:
     gitignore_path.write_text(content.read_text(encoding="utf-8"), encoding="utf-8")
 
 
-def scaffold_project():
+def scaffold_project(folder: str = None):
+    if folder:
+        project_dir = Path(folder)
+        project_dir.mkdir(parents=True, exist_ok=True)
+        import os
+        os.chdir(project_dir)
+
     npx = get_node_tool("npx")
     npm = get_node_tool("npm")
 
