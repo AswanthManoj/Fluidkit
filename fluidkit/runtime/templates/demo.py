@@ -1,4 +1,4 @@
-from fluidkit import query, command, form
+from fluidkit import command, form, query
 
 db = {
     "posts": [
@@ -8,9 +8,11 @@ db = {
     ]
 }
 
+
 @query
 async def get_posts():
     return db["posts"]
+
 
 @command
 async def like_post(post_id: int):
@@ -20,6 +22,7 @@ async def like_post(post_id: int):
             await get_posts().refresh()
             return True
     return None
+
 
 @form
 async def add_post(title: str, content: str):

@@ -1,4 +1,5 @@
-from fluidkit.exceptions import HTTPError, Redirect, error
+from fluidkit.exceptions import HTTPError, error
+
 
 def test_exceptions():
 
@@ -10,10 +11,10 @@ def test_exceptions():
     try:
         HTTPError(200, "OK")  # Should fail - not an error code
     except ValueError as e:
-        print("✅ Validation caught:", e)
+        print("Validation caught:", e)
 
     # Test 3: error() helper raises
     try:
         error(404, "User not found")
     except HTTPError as e:
-        print("✅ Caught:", e.status, e.message)
+        print("Caught:", e.status, e.message)

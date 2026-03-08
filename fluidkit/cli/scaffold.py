@@ -1,9 +1,10 @@
-import sys
 import shutil
+import sys
 from pathlib import Path
-from .utils import echo, _COLORS, get_node_tool
-from .config import write_default_config, load_config
-from .patch import patch_svelte_config, patch_vite_config, patch_svelte_experimental
+
+from .config import load_config, write_default_config
+from .patch import patch_svelte_config, patch_svelte_experimental, patch_vite_config
+from .utils import _COLORS, echo, get_node_tool
 
 
 def copy_runtime_files(schema_output: str = "src/lib/fluidkit") -> None:
@@ -25,8 +26,8 @@ def copy_template_files() -> None:
         (p / "__init__.py").touch()
 
     mapping = {
-        "app.py":       "src/app.py",
-        "demo.py":      "src/lib/demo.py",
+        "app.py": "src/app.py",
+        "demo.py": "src/lib/demo.py",
         "+page.svelte": "src/routes/+page.svelte",
         "+layout.svelte": "src/routes/+layout.svelte",
         "demo.remote.ts": "src/lib/demo.remote.ts",
@@ -51,14 +52,14 @@ def scaffold_project(folder: str = None):
         project_dir = Path(folder)
         project_dir.mkdir(parents=True, exist_ok=True)
         import os
+
         os.chdir(project_dir)
 
     npx = get_node_tool("npx")
     npm = get_node_tool("npm")
 
     result = npx(
-        ["sv", "create", ".", "--no-dir-check", "--no-install", "--template", "minimal"],
-        return_completed_process=True
+        ["sv", "create", ".", "--no-dir-check", "--no-install", "--template", "minimal"], return_completed_process=True
     )
     if result.returncode != 0:
         echo("fluidkit", "sv create failed.", _COLORS["error"])

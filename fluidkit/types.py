@@ -1,11 +1,13 @@
 import inspect
+from collections.abc import Callable, Generator
+from typing import Any, Generic, ParamSpec, TypeVar
+
 from fastapi import UploadFile
+
 from fluidkit.models import MutationType
-from typing import Any, Generic, TypeVar, ParamSpec, Callable, Generator
 
-
-T = TypeVar('T')
-P = ParamSpec('P')
+T = TypeVar("T")
+P = ParamSpec("P")
 
 
 class Cookies:
@@ -18,7 +20,7 @@ class Cookies:
         "httponly": "httpOnly",
         "samesite": "sameSite",
     }
-    
+
     def __init__(self, request_cookies: dict, allow_set: bool = True) -> None:
         self._cookies_to_set: list[tuple[str, str, dict]] = []
         self.allow_set = allow_set
@@ -84,15 +86,13 @@ class RemoteProxy(Generic[T]):
     def _get_serializable_kwargs(self) -> dict:
         """Get kwargs dict with RequestEvent params stripped out (for mutation metadata)."""
         kwargs = self._get_normalized_kwargs(inject_request=False)
-        return {
-            k: v for k, v in kwargs.items()
-            if self._sig.parameters[k].annotation is not RequestEvent
-        }
+        return {k: v for k, v in kwargs.items() if self._sig.parameters[k].annotation is not RequestEvent}
 
     def _get_context_or_warn(self, method_name: str):
         """Return FluidKitContext if available, else warn and return None."""
-        from fluidkit.context import get_context
         import warnings
+
+        from fluidkit.context import get_context
 
         try:
             return get_context()

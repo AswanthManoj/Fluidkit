@@ -1,19 +1,18 @@
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Set
-from fluidkit.utilities import generate_route_path
-from fluidkit.codegen.ts import GENERATED_FILE_WARNING, TSWriter, annotation_to_ts, module_to_namespace
-from fluidkit.models import FunctionMetadata, DecoratorType, ParameterMetadata, FieldAnnotation, ContainerType
 
+from fluidkit.codegen.ts import GENERATED_FILE_WARNING, TSWriter, annotation_to_ts, module_to_namespace
+from fluidkit.models import ContainerType, DecoratorType, FieldAnnotation, FunctionMetadata, ParameterMetadata
+from fluidkit.utilities import generate_route_path
 
 logger = logging.getLogger(__name__)
 
 
 def generate_remote_files(
-    functions: Dict[str, FunctionMetadata],
+    functions: dict[str, FunctionMetadata],
 ) -> None:
-    by_file: Dict[str, List[FunctionMetadata]] = {}
+    by_file: dict[str, list[FunctionMetadata]] = {}
     for fn in functions.values():
         if fn.file_path:
             by_file.setdefault(fn.file_path, []).append(fn)
@@ -27,7 +26,7 @@ def generate_remote_files(
         logger.debug("generated %s", out_path)
 
 
-def render_remote_file(functions: List[FunctionMetadata]) -> str:
+def render_remote_file(functions: list[FunctionMetadata]) -> str:
     if not functions:
         return ""
 
@@ -62,8 +61,8 @@ def render_remote_file(functions: List[FunctionMetadata]) -> str:
     return w.render()
 
 
-def _collect_custom_types(functions: List[FunctionMetadata]) -> Dict[str, str]:
-    found: Dict[str, str] = {}
+def _collect_custom_types(functions: list[FunctionMetadata]) -> dict[str, str]:
+    found: dict[str, str] = {}
 
     def _collect(ann: FieldAnnotation):
         if ann.custom_type and ann.custom_type != "File" and ann.class_reference:
@@ -81,10 +80,10 @@ def _collect_custom_types(functions: List[FunctionMetadata]) -> Dict[str, str]:
 
 def _render_imports(
     w: TSWriter,
-    types: Set[DecoratorType],
+    types: set[DecoratorType],
     has_mutations: bool,
     has_registrations: bool,
-    custom_types: Dict[str, str],
+    custom_types: dict[str, str],
 ) -> None:
     has_forms = bool(types & {DecoratorType.FORM})
     kit_imports = ["error"]
@@ -94,9 +93,9 @@ def _render_imports(
 
     def _import_name(t: DecoratorType) -> str:
         if t == DecoratorType.PRERENDER:
-            return 'prerender'
+            return "prerender"
         if t == DecoratorType.QUERY_BATCH:
-            return 'query'
+            return "query"
         return t.value
 
     app_imports = sorted({_import_name(t) for t in types}) + ["getRequestEvent"]
@@ -107,13 +106,15 @@ def _render_imports(
         registry_imports.append("getRemoteFunction")
     if has_registrations:
         registry_imports.append("registerRemoteFunction")
+    if has_forms:
+        registry_imports.extend(["extractFiles", "hasFiles"])
     if registry_imports:
-        w.line(f"import {{ {', '.join(registry_imports)} }} from '$fluidkit/registry';")
+        w.line(f"import {{ {', '.join(sorted(registry_imports))} }} from '$fluidkit/registry';")
 
     w.line("import { BASE_URL } from '$fluidkit/config';")
 
     if custom_types:
-        by_namespace: Dict[str, List[str]] = {}
+        by_namespace: dict[str, list[str]] = {}
         for type_name, module in custom_types.items():
             ns = module_to_namespace(module)
             by_namespace.setdefault(ns, []).append(type_name)
@@ -125,32 +126,20 @@ def _render_imports(
                 w.line(f"type {type_name} = {ns}.{type_name};")
 
 
-def _ts_params(parameters: List[ParameterMetadata]) -> str:
-    return ", ".join(
-        f"{p.name}{'?' if not p.required else ''}: {annotation_to_ts(p.annotation)}"
-        for p in parameters
-    )
+def _ts_params(parameters: list[ParameterMetadata]) -> str:
+    return ", ".join(f"{p.name}{'?' if not p.required else ''}: {annotation_to_ts(p.annotation)}" for p in parameters)
 
 
-def _ts_body(parameters: List[ParameterMetadata]) -> str:
+def _ts_body(parameters: list[ParameterMetadata]) -> str:
     if not parameters:
         return "JSON.stringify({})"
     return f"JSON.stringify({{ {', '.join(p.name for p in parameters)} }})"
 
 
-# =============================================================================
-# Shared helpers
-# =============================================================================
+# ── Shared helpers ────────────────────────────────────────────────────────
+
 
 def _build_signature(fn: FunctionMetadata, kind: str, *, param_style: str = "typed") -> str:
-    """
-    Build `export const name = kind(...async... => {`
-
-    param_style:
-      "typed"  — 1 param flat, 2+ destructured object (query/command)
-      "flat"   — always flat typed params, no destructuring (prerender)
-      "data"   — always untyped `(data)` when params exist (form)
-    """
     if not fn.parameters:
         return f"export const {fn.name} = {kind}(async () => {{"
 
@@ -162,21 +151,46 @@ def _build_signature(fn: FunctionMetadata, kind: str, *, param_style: str = "typ
     if param_style == "flat" or len(fn.parameters) == 1:
         return f"export const {fn.name} = {kind}({unchecked}async ({_ts_params(fn.parameters)}) => {{"
 
-    # 2+ params with destructuring (query/command)
     destructuring = ", ".join(p.name for p in fn.parameters)
-    return f"export const {fn.name} = {kind}({unchecked}async ({{{destructuring}}}: {{{_ts_params(fn.parameters)}}}) => {{"
+    return (
+        f"export const {fn.name} = {kind}({unchecked}async ({{{destructuring}}}: {{{_ts_params(fn.parameters)}}}) => {{"
+    )
 
 
-def _render_fetch(w: TSWriter, route: str, params: List[ParameterMetadata], *, json_body: bool = True) -> None:
-    """Render the fetch() call. Assumes `_fk_cookies` is already in scope."""
-    body = _ts_body(params) if json_body else "_fk_form"
+def _render_fetch(w: TSWriter, route: str, params: list[ParameterMetadata]) -> None:
     with w.block(f"const _fk_res = await fetch(`${{BASE_URL}}{route}`, {{", "});"):
         w.line("method: 'POST',")
         with w.block("headers: {", "},"):
-            if json_body:
-                w.line("'Content-Type': 'application/json',")
+            w.line("'Content-Type': 'application/json',")
             w.line("'Cookie': _fk_cookies.getAll().map(c => `${c.name}=${c.value}`).join('; '),")
-        w.line(f"body: {body},")
+        w.line(f"body: {_ts_body(params)},")
+
+
+def _render_form_fetch(w: TSWriter, route: str) -> None:
+    w.line("let _fk_res: Response;")
+    w.line("if (!hasFiles(data)) {")
+    w.indent()
+    with w.block(f"_fk_res = await fetch(`${{BASE_URL}}{route}`, {{", "});"):
+        w.line("method: 'POST',")
+        with w.block("headers: {", "},"):
+            w.line("'Content-Type': 'application/json',")
+            w.line("'Cookie': _fk_cookies.getAll().map(c => `${c.name}=${c.value}`).join('; '),")
+        w.line("body: JSON.stringify(data),")
+    w.dedent()
+    w.line("} else {")
+    w.indent()
+    w.line("const { json: _fk_json, files: _fk_files } = extractFiles(data);")
+    w.line("const _fk_form = new FormData();")
+    w.line("_fk_form.append('__fluidkit_data', JSON.stringify(_fk_json));")
+    with w.block("for (const [_fk_path, _fk_file] of _fk_files) {", "}"):
+        w.line("_fk_form.append(_fk_path, _fk_file);")
+    with w.block(f"_fk_res = await fetch(`${{BASE_URL}}{route}`, {{", "});"):
+        w.line("method: 'POST',")
+        with w.block("headers: {", "},"):
+            w.line("'Cookie': _fk_cookies.getAll().map(c => `${c.name}=${c.value}`).join('; '),")
+        w.line("body: _fk_form,")
+    w.dedent()
+    w.line("}")
 
 
 def _render_error_block(w: TSWriter) -> None:
@@ -192,33 +206,15 @@ def _render_cookie_forward_block(w: TSWriter) -> None:
 
 
 def _render_mutations_block(w: TSWriter) -> None:
-    with w.block("for (const { key: _fk_key, args: _fk_args, data: _fk_data } of _fk_body.__fluidkit?.mutations ?? []) {", "}"):
+    with w.block(
+        "for (const { key: _fk_key, args: _fk_args, data: _fk_data } of _fk_body.__fluidkit?.mutations ?? []) {", "}"
+    ):
         w.line("const _fk_fn = getRemoteFunction(_fk_key);")
         w.line("if (_fk_fn) _fk_fn(_fk_args, _fk_data);")
 
 
-def _render_form_data_block(w: TSWriter) -> None:
-    w.line("const _fk_form = new FormData();")
-    with w.block("for (const [key, value] of Object.entries(data)) {", "}"):
-        w.line("if (Array.isArray(value)) {")
-        w.indent()
-        w.line("for (const v of value) _fk_form.append(key, v as string | Blob);")
-        w.dedent()
-        w.line("} else {")
-        w.indent()
-        w.line("_fk_form.append(key, value as string | Blob);")
-        w.dedent()
-        w.line("}")
+# ── Renderers ────────────────────────────────────────────────────────
 
-
-def _render_parse_and_return(w: TSWriter, return_type: str) -> None:
-    w.line("const _fk_body = await _fk_res.json();")
-    w.line(f"return _fk_body.result as {return_type};")
-
-
-# =============================================================================
-# Renderers
-# =============================================================================
 
 def _render_query(w: TSWriter, fn: FunctionMetadata) -> None:
     route = generate_route_path(fn)
@@ -227,7 +223,8 @@ def _render_query(w: TSWriter, fn: FunctionMetadata) -> None:
         w.line("const { cookies: _fk_cookies } = getRequestEvent();")
         _render_fetch(w, route, fn.parameters)
         _render_error_block(w)
-        _render_parse_and_return(w, return_type)
+        w.line("const _fk_body = await _fk_res.json();")
+        w.line(f"return _fk_body.result as {return_type};")
 
 
 def _render_query_batch(w: TSWriter, fn: FunctionMetadata) -> None:
@@ -242,7 +239,9 @@ def _render_query_batch(w: TSWriter, fn: FunctionMetadata) -> None:
     if param.annotation.container == ContainerType.ARRAY and param.annotation.args:
         inner_type = annotation_to_ts(param.annotation.args[0])
 
-    with w.block(f"export const {fn.name} = query.batch('unchecked', async ({param.name}: {inner_type}[]) => {{", "});"):
+    with w.block(
+        f"export const {fn.name} = query.batch('unchecked', async ({param.name}: {inner_type}[]) => {{", "});"
+    ):
         w.line("const { cookies: _fk_cookies } = getRequestEvent();")
         with w.block(f"const _fk_res = await fetch(`${{BASE_URL}}{route}`, {{", "});"):
             w.line("method: 'POST',")
@@ -269,14 +268,11 @@ def _render_command(w: TSWriter, fn: FunctionMetadata) -> None:
 
 
 def _render_form(w: TSWriter, fn: FunctionMetadata) -> None:
-    route = generate_route_path(fn)
     return_type = annotation_to_ts(fn.return_annotation)
     with w.block(_build_signature(fn, "form", param_style="data"), "});"):
         w.line("const { cookies: _fk_cookies } = getRequestEvent();")
         w.blank()
-        _render_form_data_block(w)
-        w.blank()
-        _render_fetch(w, route, fn.parameters, json_body=False)
+        _render_form_fetch(w, generate_route_path(fn))
         w.blank()
         _render_error_block(w)
         w.line("const _fk_body = await _fk_res.json();")
@@ -291,21 +287,19 @@ def _render_prerender(w: TSWriter, fn: FunctionMetadata) -> None:
     return_type = annotation_to_ts(fn.return_annotation)
     signature = _build_signature(fn, "prerender", param_style="flat")
 
-    has_options = fn.prerender_dynamic or (
-        fn.prerender_inputs is not None and not callable(fn.prerender_inputs)
-    )
+    has_options = fn.prerender_dynamic or (fn.prerender_inputs is not None and not callable(fn.prerender_inputs))
 
     if callable(fn.prerender_inputs):
         logger.warning(
-            "@prerender '%s' has callable inputs — cannot serialize to codegen, skipping inputs option",
-            fn.name
+            "@prerender '%s' has callable inputs — cannot serialize to codegen, skipping inputs option", fn.name
         )
 
     def _body():
         w.line("const { cookies: _fk_cookies } = getRequestEvent();")
         _render_fetch(w, route, fn.parameters)
         _render_error_block(w)
-        _render_parse_and_return(w, return_type)
+        w.line("const _fk_body = await _fk_res.json();")
+        w.line(f"return _fk_body.result as {return_type};")
 
     if has_options:
         w.line(signature)

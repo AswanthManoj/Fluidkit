@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fluidkit"
-version = "1.0.6"
-description = "Python backend, SvelteKit frontend, zero boilerplate in between."
+version = "1.1.0"
+description = "Web development for the Pythonist"
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "MIT"}
@@ -23,23 +23,41 @@ classifiers = [
 ]
 
 dependencies = [
-    "fastapi[all]>=0.128.8",
+    "fastapi>=0.129.0",
     "jurigged>=0.6.1",
     "nodejs-wheel>=24.13.1",
+    "python-multipart>=0.0.22",
     "typer>=0.16.0",
+    "uvicorn>=0.41.0",
 ]
 
 [project.scripts]
 fluidkit = "fluidkit.cli.main:app"
 
 [project.urls]
-Homepage = "https://github.com/AswanthManoj/Fluidkit"
+Homepage = "https://fluidkit.github.io"
+Documentation = "https://fluidkit.github.io/docs"
 Repository = "https://github.com/AswanthManoj/Fluidkit"
 Issues = "https://github.com/AswanthManoj/Fluidkit/issues"
-Documentation = "https://github.com/AswanthManoj/Fluidkit#readme"
 
 [tool.setuptools.packages.find]
 include = ["fluidkit*"]
 
 [tool.setuptools.package-data]
 fluidkit = ["runtime/*.ts", "runtime/*.svelte", "runtime/.gitignore.template", "runtime/templates/*", "icon.svg"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501", "UP046", "UP047"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.5",
+]

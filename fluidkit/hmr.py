@@ -1,12 +1,10 @@
-import sys
 import ast
-import types
-import queue
 import logging
+import queue
+import sys
 import threading
-import importlib
+import types
 from pathlib import Path
-
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +19,7 @@ _binding_map: dict[str, list[tuple[str, str]]] = {}
 
 # ── Route safety ──────────────────────────────────────────────────────────────
 
+
 def _schedule_route_op(op):
     with _route_lock:
         op()
@@ -28,14 +27,12 @@ def _schedule_route_op(op):
 
 # ── Utils ─────────────────────────────────────────────────────────────────────
 
+
 def _is_user_module(filename: str) -> bool:
     if not filename or "site-packages" in filename:
         return False
     resolved = str(Path(filename).resolve())
-    return any(
-        resolved.startswith(str(Path(p).resolve()))
-        for p in _watch_paths
-    )
+    return any(resolved.startswith(str(Path(p).resolve())) for p in _watch_paths)
 
 
 def _module_name_from_path(filepath: str) -> str | None:
@@ -62,6 +59,7 @@ def _resolve_module(node_module: str, node_level: int, importing_module: str) ->
 
 # ── Binding tracker ───────────────────────────────────────────────────────────
 
+
 def _track_imports(module_name: str, filename: str):
     if not _is_user_module(filename) or not filename.endswith(".py"):
         return
@@ -84,7 +82,9 @@ def _track_imports(module_name: str, filename: str):
                 "fluidkit hmr: '%s' uses 'from %s import *' — "
                 "variable changes in %s will not hot-reload. "
                 "Use explicit imports instead.",
-                module_name, resolved_module, resolved_module
+                module_name,
+                resolved_module,
+                resolved_module,
             )
             continue
 
@@ -117,16 +117,14 @@ def _rebind_changed(source_module: str):
             if mod is None or getattr(mod, local_name, None) is value:
                 continue
             setattr(mod, local_name, value)
-            logger.debug(
-                "rebound %s.%s <- %s.%s",
-                importing_module, local_name, source_module, attr_name
-            )
+            logger.debug("rebound %s.%s <- %s.%s", importing_module, local_name, source_module, attr_name)
 
 
 # ── Relative import fix ───────────────────────────────────────────────────────
 # Jurigged loses __package__ context when exec-ing individual changed statements.
 # This patches Statement.evaluate to always restore it, so `from .x import y`
 # resolves correctly instead of raising ModuleNotFoundError.
+
 
 def _patch_jurigged_for_relative_imports():
     import jurigged.codetools as jct
@@ -150,6 +148,7 @@ def _patch_jurigged_for_relative_imports():
 
 # ── HMRProxy ──────────────────────────────────────────────────────────────────
 
+
 class HMRProxy:
     __slots__ = ("_code", "_func", "_name", "_params", "_module", "_metadata")
 
@@ -157,7 +156,7 @@ class HMRProxy:
         self._func = func
         self._name = func.__name__
         self._code = func.__code__
-        self._params = list(func.__code__.co_varnames[:func.__code__.co_argcount])
+        self._params = list(func.__code__.co_varnames[: func.__code__.co_argcount])
         self._module = metadata.module
         self._metadata = metadata
 
@@ -168,24 +167,26 @@ class HMRProxy:
             key = f"{self._module}#{self._name}"
             if fluidkit_registry.functions.get(key) is self._metadata:
                 module, name, metadata = self._module, self._name, self._metadata
+
                 def op():
                     fluidkit_registry.unregister(module, name)
                     fluidkit_registry._fire_on_register(metadata)
+
                 _schedule_route_op(op)
-            if hasattr(self._func, '_hmr_proxy'):
+            if hasattr(self._func, "_hmr_proxy"):
                 del self._func._hmr_proxy
             return
 
-        new_code = getattr(new_func, '__code__', new_func)
+        new_code = getattr(new_func, "__code__", new_func)
         if not isinstance(new_code, types.CodeType):
             return
 
         if isinstance(new_func, types.CodeType):
             self._code = new_code
-            self._params = list(new_code.co_varnames[:new_code.co_argcount])
+            self._params = list(new_code.co_varnames[: new_code.co_argcount])
             return
 
-        new_params = list(new_code.co_varnames[:new_code.co_argcount])
+        new_params = list(new_code.co_varnames[: new_code.co_argcount])
         old_params = self._params
         self._code = new_code
         self._params = new_params
@@ -197,6 +198,7 @@ class HMRProxy:
 
 # ── Conform attachment ────────────────────────────────────────────────────────
 
+
 def attach_conform(metadata):
     module = sys.modules.get(metadata.module)
     if module is None:
@@ -204,13 +206,14 @@ def attach_conform(metadata):
     module_level = getattr(module, metadata.name, None)
     if module_level is None:
         return
-    actual_func = getattr(module_level, '__wrapped__', module_level)
-    if hasattr(actual_func, '_hmr_proxy'):
+    actual_func = getattr(module_level, "__wrapped__", module_level)
+    if hasattr(actual_func, "_hmr_proxy"):
         return
     actual_func._hmr_proxy = HMRProxy(actual_func, metadata)
 
 
 # ── Registry patch ────────────────────────────────────────────────────────────
+
 
 def _patch_registry(registry):
     original_register = registry.register
@@ -218,6 +221,7 @@ def _patch_registry(registry):
     def safe_register(metadata, handler):
         def op():
             original_register(metadata, handler)
+
         _schedule_route_op(op)
         _pending_attach.put(metadata)
 
@@ -225,6 +229,7 @@ def _patch_registry(registry):
 
 
 # ── Watcher callbacks ─────────────────────────────────────────────────────────
+
 
 def _on_postrun(path: str, cf) -> None:
     module_name = _module_name_from_path(path)
@@ -240,15 +245,17 @@ def _on_postrun(path: str, cf) -> None:
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
 
+
 def setup(watcher, watch_paths: tuple[str, ...] = ("./",)):
     global _watch_paths
     _watch_paths = watch_paths
 
     _patch_jurigged_for_relative_imports()  # must be before jurigged watches anything
 
-    from jurigged.register import add_sniffer
-    from fluidkit.registry import fluidkit_registry
     from jurigged import registry as jurigged_registry
+    from jurigged.register import add_sniffer
+
+    from fluidkit.registry import fluidkit_registry
 
     _patch_registry(fluidkit_registry)
 

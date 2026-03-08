@@ -1,8 +1,9 @@
 from __future__ import annotations
-from contextvars import ContextVar
-from typing import List, Any, TYPE_CHECKING
-from fluidkit.models import MutationType, MutationEntry
 
+from contextvars import ContextVar
+from typing import TYPE_CHECKING, Any
+
+from fluidkit.models import MutationEntry, MutationType
 
 if TYPE_CHECKING:
     from fluidkit.types import RequestEvent
@@ -10,6 +11,7 @@ if TYPE_CHECKING:
 
 class _ContextAccessor:
     """Thin wrapper over ContextVar with a descriptive error on missing get()."""
+
     __slots__ = ("_var", "_error_msg")
 
     def __init__(self, name: str, error_msg: str):
@@ -31,15 +33,17 @@ class _ContextAccessor:
 
 class FluidKitContext:
     def __init__(self):
-        self.mutations: List[MutationEntry] = []
+        self.mutations: list[MutationEntry] = []
 
     def add_mutation(self, mutation_type: MutationType, key: str, args: dict, data: Any):
-        self.mutations.append(MutationEntry(
-            key=key,
-            args=args,
-            data=data,
-            mutation_type=mutation_type,
-        ))
+        self.mutations.append(
+            MutationEntry(
+                key=key,
+                args=args,
+                data=data,
+                mutation_type=mutation_type,
+            )
+        )
 
 
 _current_context = _ContextAccessor(

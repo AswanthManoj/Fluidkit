@@ -1,45 +1,51 @@
 import asyncio
-from fluidkit.context import FluidKitContext, set_context, get_context, reset_context
+
+from fluidkit.context import FluidKitContext, get_context, reset_context, set_context
+from fluidkit.models import MutationType
+
 
 async def test_basic():
-    # Create and set context
     ctx = FluidKitContext()
     token = set_context(ctx)
-    
-    # Add some data
-    ctx.add_refresh("get_posts", {}, [{"id": "1", "title": "Post"}])
-    ctx.add_set("get_user", {"user_id": "123"}, {"id": "123", "name": "Jane"})
-    
-    # Retrieve from context
+
+    ctx.add_mutation(MutationType.REFRESH, "get_posts", {}, [{"id": "1", "title": "Post"}])
+    ctx.add_mutation(MutationType.SET, "get_user", {"user_id": "123"}, {"id": "123", "name": "Jane"})
+
     retrieved = get_context()
-    print("Refreshed:", retrieved.refreshed)
-    print("Set:", retrieved.set_data)
-    
-    # Clean up
+    assert len(retrieved.mutations) == 2
+    assert retrieved.mutations[0].mutation_type == MutationType.REFRESH
+    assert retrieved.mutations[0].key == "get_posts"
+    assert retrieved.mutations[1].mutation_type == MutationType.SET
+    assert retrieved.mutations[1].key == "get_user"
+
     reset_context(token)
-    print("✅ Basic test passed!")
+    print("Basic test passed")
+
 
 async def test_isolation():
-    """Test that two async tasks have separate contexts"""
+    """Test that two async tasks have separate contexts."""
+
     async def task1():
-        ctx1 = FluidKitContext()
-        token = set_context(ctx1)
-        ctx1.add_refresh("task1_query", {}, "task1_data")
-        await asyncio.sleep(0.01)  # Simulate async work
-        assert get_context().refreshed["task1_query"].data == "task1_data"
-        reset_context(token)
-    
-    async def task2():
-        ctx2 = FluidKitContext()
-        token = set_context(ctx2)
-        ctx2.add_refresh("task2_query", {}, "task2_data")
+        ctx = FluidKitContext()
+        token = set_context(ctx)
+        ctx.add_mutation(MutationType.REFRESH, "task1_query", {}, "task1_data")
         await asyncio.sleep(0.01)
-        assert get_context().refreshed["task2_query"].data == "task2_data"
+        retrieved = get_context()
+        assert retrieved.mutations[0].data == "task1_data"
         reset_context(token)
-    
-    # Run concurrently
+
+    async def task2():
+        ctx = FluidKitContext()
+        token = set_context(ctx)
+        ctx.add_mutation(MutationType.REFRESH, "task2_query", {}, "task2_data")
+        await asyncio.sleep(0.01)
+        retrieved = get_context()
+        assert retrieved.mutations[0].data == "task2_data"
+        reset_context(token)
+
     await asyncio.gather(task1(), task2())
-    print("✅ Isolation test passed!")
+    print("Isolation test passed")
+
 
 if __name__ == "__main__":
     asyncio.run(test_basic())

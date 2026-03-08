@@ -1,10 +1,10 @@
 import typer
-from .config import load_config
-from .scaffold import scaffold_project
-from .process import run_dev, run_build, run_preview
-from .utils import run_node_tool, ensure_node_modules
-from .patch import patch_svelte_config, patch_vite_config, check_svelte_experimental
 
+from .config import load_config
+from .patch import check_svelte_experimental, patch_svelte_config, patch_vite_config
+from .process import run_build, run_dev, run_preview
+from .scaffold import scaffold_project
+from .utils import ensure_node_modules, run_node_tool
 
 app = typer.Typer(help="FluidKit CLI")
 
@@ -59,33 +59,25 @@ def preview(
     run_preview(config)
 
 
-@app.command(
-    context_settings={"allow_extra_args": True, "allow_interspersed_args": False}
-)
+@app.command(context_settings={"allow_extra_args": True, "allow_interspersed_args": False})
 def npm(ctx: typer.Context):
     """Run any npm command. Usage: fluidkit npm install, fluidkit npm run build, etc."""
     run_node_tool("npm", ctx.args)
 
 
-@app.command(
-    context_settings={"allow_extra_args": True, "allow_interspersed_args": False}
-)
+@app.command(context_settings={"allow_extra_args": True, "allow_interspersed_args": False})
 def npx(ctx: typer.Context):
     """Run any npx command. Usage: fluidkit npx sv add tailwindcss, fluidkit npx prisma generate, etc."""
     run_node_tool("npx", ctx.args)
 
 
-@app.command(
-    context_settings={"allow_extra_args": True, "allow_interspersed_args": False}
-)
+@app.command(context_settings={"allow_extra_args": True, "allow_interspersed_args": False})
 def node(ctx: typer.Context):
     """Run node directly. Usage: fluidkit node script.js, fluidkit node --version, etc."""
     run_node_tool("node", ctx.args)
 
 
-@app.command(
-    context_settings={"allow_extra_args": True, "allow_interspersed_args": False}
-)
+@app.command(context_settings={"allow_extra_args": True, "allow_interspersed_args": False})
 def install(
     ctx: typer.Context,
     dev: bool = typer.Option(False, "-D", "--save-dev", help="Install as dev dependency"),

@@ -1,11 +1,32 @@
-import sys
 import asyncio
-import threading
 import importlib.util
+import sys
+import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
+
 from fluidkit import __version__
 from fluidkit.registry import fluidkit_registry
-from .utils import setup_logging, header, hmr_update, echo, display_host, run_node_tool, run_node_tool_async, _COLORS
+
+from .utils import _COLORS, display_host, echo, header, hmr_update, run_node_tool, run_node_tool_async, setup_logging
+
+
+@contextmanager
+def _uvicorn_server(app, host: str, port: int, **kwargs):
+    """Start uvicorn in a thread, wait for ready, shut down on exit."""
+    import uvicorn
+
+    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_config=None, **kwargs))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    while not server.started:
+        time.sleep(0.1)
+    try:
+        yield server
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
 
 
 def load_entry(entry: str) -> None:
@@ -35,24 +56,27 @@ async def _stream(stream, prefix: str, color):
 
 
 async def _run_servers(config: dict, npm_command: str, hmr: bool = True) -> None:
-    import uvicorn
-    from fluidkit.codegen import generate, watch as codegen_watch
+    from fluidkit.codegen import generate
+    from fluidkit.codegen import watch as codegen_watch
 
     load_entry(config["entry"])
     fluidkit_registry.dev = True
 
     base_url = f"http://{display_host(config)}:{config['backend_port']}"
+
+    from fluidkit.cli.scaffold import copy_runtime_files
+
+    copy_runtime_files(schema_output=config["schema_output"])
+
     generate(fluidkit_registry.functions, base_url=base_url, schema_output=config["schema_output"])
     codegen_watch(fluidkit_registry, base_url=base_url, schema_output=config["schema_output"])
 
     if hmr:
         import jurigged
+
         from fluidkit import hmr as hmr_module
 
-        watcher = jurigged.watch(
-            logger=hmr_update,
-            pattern=config["watch_pattern"]
-        )
+        watcher = jurigged.watch(logger=hmr_update, pattern=config["watch_pattern"])
         watch_dir = str(Path(config["entry"]).parent)
         hmr_module.setup(watcher, watch_paths=(watch_dir,))
 
@@ -64,54 +88,42 @@ async def _run_servers(config: dict, npm_command: str, hmr: bool = True) -> None
 
     setup_logging()
 
-    server = uvicorn.Server(uvicorn.Config(
+    with _uvicorn_server(
         fluidkit_registry.app,
         host=config["host"],
         port=config["backend_port"],
-        log_config=None,
         reload=not hmr,
-    ))
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
+    ):
+        proc = await run_node_tool_async("npm", ["run", npm_command])
 
-    # Wait for FastAPI to be ready before showing anything
-    while not server.started:
-        await asyncio.sleep(0.1)
+        host = display_host(config)
+        header_shown = False
 
-    proc = await run_node_tool_async("npm", ["run", npm_command])
+        async def _stream_stdout(stream):
+            nonlocal header_shown
+            async for line in stream:
+                text = line.decode(errors="replace").rstrip()
+                if not text:
+                    continue
+                if not header_shown and "ready in" in text:
+                    header_shown = True
+                    header(
+                        version=__version__,
+                        fluid_url=f"http://{host}:{config['backend_port']}",
+                        vite_url=f"http://localhost:{config['frontend_port']}",
+                    )
+                echo("vite", text, _COLORS["vite"])
 
-    # Stream vite output, show header once vite reports ready
-    host = display_host(config)
-    header_shown = False
-
-    async def _stream_stdout(stream):
-        nonlocal header_shown
-        async for line in stream:
-            text = line.decode(errors="replace").rstrip()
-            if not text:
-                continue
-            # Vite prints "ready in X ms" when it's up
-            if not header_shown and "ready in" in text:
-                header_shown = True
-                header(
-                    version=__version__,
-                    fluid_url=f"http://{host}:{config['backend_port']}",
-                    vite_url=f"http://localhost:{config['frontend_port']}"
-                )
-            echo("vite", text, _COLORS["vite"])
-
-    try:
-        await asyncio.gather(
-            _stream_stdout(proc.stdout),
-            _stream(proc.stderr, "vite", _COLORS["warn"]),
-        )
-    except (asyncio.CancelledError, KeyboardInterrupt):
-        pass
-    finally:
-        proc.terminate()
-        await proc.wait()
-        server.should_exit = True
-        thread.join(timeout=5)
+        try:
+            await asyncio.gather(
+                _stream_stdout(proc.stdout),
+                _stream(proc.stderr, "vite", _COLORS["warn"]),
+            )
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            pass
+        finally:
+            proc.terminate()
+            await proc.wait()
 
 
 def _run_with_header(config: dict, npm_command: str, hmr: bool = False) -> None:
@@ -130,13 +142,16 @@ def run_preview(config: dict) -> None:
 
 
 def run_build(config: dict) -> None:
-    import uvicorn
-    import threading
     from fluidkit.codegen import generate
 
     load_entry(config["entry"])
 
     base_url = f"http://localhost:{config['backend_port']}"
+
+    from fluidkit.cli.scaffold import copy_runtime_files
+
+    copy_runtime_files(schema_output=config["schema_output"])
+
     generate(
         functions=fluidkit_registry.functions,
         base_url=base_url,
@@ -145,21 +160,10 @@ def run_build(config: dict) -> None:
     echo("fluid", "codegen done")
 
     setup_logging()
-    server = uvicorn.Server(uvicorn.Config(
+
+    with _uvicorn_server(
         fluidkit_registry.app,
         host="localhost",
         port=config["backend_port"],
-        log_config=None,
-    ))
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-
-    import time
-    while not server.started:
-        time.sleep(0.1)
-
-    try:
+    ):
         run_node_tool("npm", ["run", "build"])
-    finally:
-        server.should_exit = True
-        thread.join(timeout=5)

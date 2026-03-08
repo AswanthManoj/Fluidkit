@@ -1,21 +1,22 @@
+import logging
 import re
 import sys
-import typer
-import logging
 
+import typer
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 
 _COLORS = {
-    "error":  typer.colors.BRIGHT_RED,
-    "hmr":    typer.colors.BRIGHT_BLUE,
-    "fluid":  typer.colors.BRIGHT_CYAN,
-    "vite":   typer.colors.BRIGHT_GREEN,
-    "warn":   typer.colors.BRIGHT_YELLOW,
+    "error": typer.colors.BRIGHT_RED,
+    "hmr": typer.colors.BRIGHT_BLUE,
+    "fluid": typer.colors.BRIGHT_CYAN,
+    "vite": typer.colors.BRIGHT_GREEN,
+    "warn": typer.colors.BRIGHT_YELLOW,
 }
 
 
 # ── Single output authority ───────────────────────────────────────────────────
+
 
 def echo(prefix: str, line: str, color: str = None) -> None:
     fg = color or _COLORS.get(prefix, typer.colors.BRIGHT_CYAN)
@@ -50,13 +51,12 @@ def hmr_update(op: str) -> None:
     else:
         color = _COLORS["vite"]
     typer.echo(
-        typer.style("  [fluid] ", fg=_COLORS["fluid"], bold=True)
-        + typer.style("hmr update", fg=color)
-        + f" {op}"
+        typer.style("  [fluid] ", fg=_COLORS["fluid"], bold=True) + typer.style("hmr update", fg=color) + f" {op}"
     )
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────
+
 
 class _FluidKitLogHandler(logging.Handler):
     def emit(self, record: logging.LogRecord):
@@ -85,9 +85,11 @@ def setup_logging() -> None:
 
 # ── Node helpers ──────────────────────────────────────────────────────────────
 
+
 def ensure_node_modules() -> None:
     """Auto-install npm dependencies if node_modules is missing."""
     from pathlib import Path
+
     if not Path("node_modules").exists():
         echo("fluid", "node_modules not found, running npm install...", _COLORS["warn"])
         run_node_tool("npm", ["install"])
@@ -97,6 +99,7 @@ def get_node_tool(name: str):
     """Get a nodejs-wheel tool callable (npm, npx, node) or exit with install instructions."""
     try:
         import nodejs_wheel
+
         return getattr(nodejs_wheel, name)
     except ImportError:
         echo("fluid", "nodejs-wheel is not installed. Run: pip install nodejs-wheel", _COLORS["error"])
@@ -118,13 +121,16 @@ async def run_node_tool_async(name: str, args: list[str]):
     including Windows where npm is a .cmd batch file.
     """
     import asyncio
+
     arg_list = ", ".join(repr(a) for a in args)
     script = (
         f"import sys; import nodejs_wheel; "
         f"sys.exit(nodejs_wheel.{name}([{arg_list}], return_completed_process=True).returncode)"
     )
     return await asyncio.create_subprocess_exec(
-        sys.executable, "-c", script,
+        sys.executable,
+        "-c",
+        script,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
