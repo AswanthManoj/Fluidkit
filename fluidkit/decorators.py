@@ -1,48 +1,45 @@
 import logging
-from fastapi import Request
+from collections.abc import Awaitable, Callable
 from functools import update_wrapper
-from fastapi.responses import JSONResponse
-from fluidkit.exceptions import HTTPError, Redirect
-from typing import Callable, TypeVar, Awaitable, ParamSpec
+from typing import ParamSpec, TypeVar
 
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+from fluidkit.context import (
+    FluidKitContext,
+    reset_context,
+    reset_request_event,
+    set_context,
+)
+from fluidkit.exceptions import HTTPError, Redirect
 from fluidkit.models import (
     DecoratorType,
+    create_batch_query_response,
+    create_command_response,
     create_error_response,
     create_query_response,
-    create_command_response,
     create_redirect_response,
-    create_batch_query_response,
 )
-from fluidkit.utilities import (
-    extract_metadata,
-    parse_request_data,
-    build_json_response,
-    setup_request_context,
-    inject_request_if_needed,
-)
-from fluidkit.context import (
-    FluidKitContext, set_context,
-    reset_request_event, reset_context,
-)
-from fluidkit.types import RemoteProxy
 from fluidkit.registry import fluidkit_registry
+from fluidkit.types import RemoteProxy
+from fluidkit.utilities import (
+    build_json_response,
+    extract_metadata,
+    inject_request_if_needed,
+    parse_request_data,
+    setup_request_context,
+)
 
-
-T = TypeVar('T')
-P = ParamSpec('P')
+T = TypeVar("T")
+P = ParamSpec("P")
 logger = logging.getLogger(__name__)
-
-
-_FORM_DOC_SUFFIX = """
-
-**Fluidkit Note**: When testing with files in Swagger UI, send complex types as JSON strings.
-Example: user: '{"name":"John","email":"john@example.com","age":30}'
-"""
 
 
 # =================================================================================
 # Internal helpers
 # =================================================================================
+
 
 def _error_response(e: Exception, status: int = 500, message: str | None = None) -> JSONResponse:
     if status == 500:
@@ -61,19 +58,24 @@ def _error_response(e: Exception, status: int = 500, message: str | None = None)
 def _http_error_response(e: HTTPError) -> JSONResponse:
     return JSONResponse(
         status_code=e.status,
-        content=create_error_response(message=e.message, dev=fluidkit_registry.dev)
-            .model_dump(by_alias=True, exclude_none=True),
+        content=create_error_response(message=e.message, dev=fluidkit_registry.dev).model_dump(
+            by_alias=True, exclude_none=True
+        ),
     )
 
 
 def _wrap_and_register(func, metadata, sig):
     """Create the RemoteProxy wrapper. Shared by all decorators."""
+
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> RemoteProxy[T]:
         return RemoteProxy(
-            sig=sig, args=args, kwargs=kwargs,
+            sig=sig,
+            args=args,
+            kwargs=kwargs,
             executor=func,
             func_name=f"{metadata.module}#{metadata.name}",
         )
+
     update_wrapper(wrapper, func)
     return wrapper
 
@@ -87,7 +89,6 @@ def _make_remote(
     use_form_parsing: bool = False,
     redirect_behavior: str = "none",
     catch_value_error: bool = False,
-    handler_doc_suffix: str = "",
 ):
     """
     Core factory — builds the FastAPI handler, registers the route,
@@ -99,9 +100,7 @@ def _make_remote(
       form:      context=yes, cookies=rw, body=form, redirect=respond, valuerror=yes
       prerender: context=no,  cookies=ro, body=json, redirect=none,    valuerror=no
     """
-    metadata, request_param_name, filtered_params, sig = extract_metadata(
-        func=func, decorator_type=decorator_type
-    )
+    metadata, request_param_name, sig = extract_metadata(func=func, decorator_type=decorator_type)
 
     async def fastapi_handler(request: Request):
         request_event, cookies, request_event_token = setup_request_context(
@@ -120,7 +119,9 @@ def _make_remote(
                 body = await request.json()
 
             kwargs = inject_request_if_needed(
-                sig=sig, args=(), kwargs=body,
+                sig=sig,
+                args=(),
+                kwargs=body,
                 request_event=request_event,
                 request_param_name=request_param_name,
             )
@@ -153,7 +154,8 @@ def _make_remote(
         except ValueError as e:
             if catch_value_error:
                 return _error_response(
-                    e, status=400,
+                    e,
+                    status=400,
                     message=f"Invalid data in {func.__name__}(): {e}",
                 )
             return _error_response(e)
@@ -167,10 +169,7 @@ def _make_remote(
             reset_request_event(request_event_token)
 
     fastapi_handler.__name__ = func.__name__
-    if handler_doc_suffix:
-        fastapi_handler.__doc__ = f"{func.__doc__ or ''}{handler_doc_suffix}"
-    else:
-        fastapi_handler.__doc__ = func.__doc__
+    fastapi_handler.__doc__ = func.__doc__
 
     fluidkit_registry.register(metadata, fastapi_handler)
 
@@ -182,26 +181,28 @@ def _make_remote(
 # Public decorators
 # =================================================================================
 
-class _QueryDecorator:
-    """Decorator for creating remote query functions."""
 
-    def __call__(self, func: Callable[P, Awaitable[T]]) -> Callable[P, RemoteProxy[T]]:
-        """
-        Create a remote query function for reading data.
+class query:
+    """
+    Create a remote query function for reading data.
 
-        Queries are read-only operations that can be called from SvelteKit components.
-        They support caching and can be refreshed on demand.
+    Queries are read-only operations that can be called from SvelteKit components.
+    They support caching and can be refreshed on demand.
 
-        Example::
+    Example:
+    ```python
+        @query
+        async def get_user(user_id: str) -> User:
+            return await db.get_user(user_id)
+    ```
+    """
 
-            @query
-            async def get_user(user_id: str) -> User:
-                return await db.get_user(user_id)
-        """
+    def __new__(cls, func: Callable[P, Awaitable[T]]) -> Callable[P, RemoteProxy[T]]:
         wrapper, _ = _make_remote(func, DecoratorType.QUERY)
         return wrapper
 
-    def batch(self, func: Callable[P, Awaitable[T]]) -> Callable[P, RemoteProxy[T]]:
+    @staticmethod
+    def batch(func: Callable[P, Awaitable[T]]) -> Callable[P, RemoteProxy[T]]:
         """
         Create a batched remote query function.
 
@@ -209,17 +210,17 @@ class _QueryDecorator:
         receives a list of all arguments and must return a callable that
         resolves each individual call.
 
-        Example::
-
+        Example:
+        ```python
             @query.batch
             async def get_weather(city_ids: list[str]):
                 weather = await db.get_bulk(city_ids)
                 lookup = {w.city_id: w for w in weather}
                 return lambda city_id: lookup.get(city_id)
+        ```
         """
-        metadata, request_param_name, filtered_params, sig = extract_metadata(
-            func=func, decorator_type=DecoratorType.QUERY_BATCH
-        )
+
+        metadata, request_param_name, sig = extract_metadata(func=func, decorator_type=DecoratorType.QUERY_BATCH)
 
         async def fastapi_handler(request: Request):
             request_event, cookies, request_event_token = setup_request_context(
@@ -270,25 +271,27 @@ class _QueryDecorator:
         return _wrap_and_register(_single_executor, metadata, sig)
 
 
-class _CommandDecorator:
-    """Decorator for creating remote command functions."""
+class command:
+    """
+    Create a remote command function for mutations.
 
-    def __call__(self, func: Callable[P, Awaitable[T]]) -> Callable[P, RemoteProxy[T]]:
-        """
-        Create a remote command function for mutations.
+    Commands perform write operations and can update query caches in a single
+    request using .refresh() or .set() within the function body.
 
-        Commands perform write operations and can update query caches in a single
-        request using .refresh() or .set() within the function body.
+    Example:
+    ```python
+        @command
+        async def add_like(post_id: str) -> None:
+            await db.increment_likes(post_id)
+            await get_posts().refresh()
+    ```
+    """
 
-        Example::
+    def __new__(cls, func: Callable[P, Awaitable[T]]) -> Callable[P, RemoteProxy[T]]:
 
-            @command
-            async def add_like(post_id: str) -> None:
-                await db.increment_likes(post_id)
-                await get_posts().refresh()
-        """
         wrapper, _ = _make_remote(
-            func, DecoratorType.COMMAND,
+            func,
+            DecoratorType.COMMAND,
             allow_set_cookies=True,
             use_context=True,
             redirect_behavior="warn",
@@ -296,56 +299,56 @@ class _CommandDecorator:
         return wrapper
 
 
-class _FormDecorator:
-    """Decorator for creating remote form handlers."""
+class form:
+    """
+    Create a remote form handler with progressive enhancement.
 
-    def __call__(self, func: Callable[P, Awaitable[T]]) -> Callable[P, RemoteProxy[T]]:
-        """
-        Create a remote form handler with progressive enhancement.
+    Forms work without JavaScript and support file uploads, nested
+    Pydantic models, and complex types natively.
 
-        Forms work without JavaScript and support file uploads. Complex types
-        should be sent as JSON strings when using multipart/form-data.
+    Example:
+    ```python
+        @form
+        async def create_post(title: str, photo: FileUpload) -> None:
+            await storage.save(photo.filename, await photo.read())
+            raise Redirect(303, '/posts')
+    ```
+    """
 
-        Example::
-
-            @form
-            async def create_post(title: str, photo: FileUpload) -> None:
-                await storage.save(photo.filename, await photo.read())
-                raise Redirect(303, '/posts')
-        """
+    def __new__(cls, func: Callable[P, Awaitable[T]]) -> Callable[P, RemoteProxy[T]]:
         wrapper, _ = _make_remote(
-            func, DecoratorType.FORM,
+            func,
+            DecoratorType.FORM,
             allow_set_cookies=True,
             use_context=True,
             use_form_parsing=True,
             redirect_behavior="respond",
             catch_value_error=True,
-            handler_doc_suffix=_FORM_DOC_SUFFIX,
         )
         return wrapper
 
 
-class _PrerenderDecorator:
-    """Decorator for creating prerendered remote functions."""
+class prerender:
+    """
+    Create a remote function that prerenders data at build time.
 
-    def __call__(self, func=None, *, inputs=None, dynamic=False):
-        """
-        Create a remote function that prerenders data at build time.
+    Args:
+        inputs: List of input values or callable returning list.
+        dynamic: If True, allows runtime calls with non-prerendered arguments.
 
-        Args:
-            inputs: List of input values or callable returning list.
-            dynamic: If True, allows runtime calls with non-prerendered arguments.
+    Example:
+    ```python
+        @prerender
+        async def get_posts() -> list[Post]:
+            return await db.get_posts()
 
-        Example::
+        @prerender(inputs=['post-1', 'post-2'], dynamic=True)
+        async def get_post(slug: str) -> Post:
+            return await db.get_post(slug)
+    ```
+    """
 
-            @prerender
-            async def get_posts() -> list[Post]:
-                return await db.get_posts()
-
-            @prerender(inputs=['post-1', 'post-2'], dynamic=True)
-            async def get_post(slug: str) -> Post:
-                return await db.get_post(slug)
-        """
+    def __new__(cls, func=None, *, inputs=None, dynamic=False):
         def decorator(fn: Callable[P, Awaitable[T]]) -> Callable[P, RemoteProxy[T]]:
             wrapper, metadata = _make_remote(fn, decorator_type=DecoratorType.PRERENDER)
             metadata.prerender_inputs = inputs
@@ -355,9 +358,3 @@ class _PrerenderDecorator:
         if func is None:
             return decorator
         return decorator(func)
-
-
-form = _FormDecorator()
-query = _QueryDecorator()
-command = _CommandDecorator()
-prerender = _PrerenderDecorator()

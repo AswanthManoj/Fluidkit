@@ -1,22 +1,35 @@
-import inspect
 import logging
 from enum import Enum
-from pydantic import BaseModel
 from typing import get_type_hints
+
+from pydantic import BaseModel
 from pydantic_core import PydanticUndefinedType
 
-from fluidkit.utilities import normalize_types
-from fluidkit.models import FieldAnnotation, BaseType
 from fluidkit.codegen.ts import TSWriter, annotation_to_ts
-
+from fluidkit.models import BaseType, FieldAnnotation
+from fluidkit.utilities import normalize_types
 
 logger = logging.getLogger(__name__)
 
 
 _BROWSER_RESERVED = {
-    "Request", "Response", "URL", "Node", "Comment",
-    "Blob", "FormData", "Headers", "Cache", "Storage",
-    "File", "Event", "Location", "Error", "Date", "Image", "Array"
+    "Request",
+    "Response",
+    "URL",
+    "Node",
+    "Comment",
+    "Blob",
+    "FormData",
+    "Headers",
+    "Cache",
+    "Storage",
+    "File",
+    "Event",
+    "Location",
+    "Error",
+    "Date",
+    "Image",
+    "Array",
 }
 
 
@@ -27,7 +40,7 @@ def render_class(cls: type) -> str:
             "Pydantic model named '%s' conflicts with a browser-native TypeScript type — "
             "generated interface may cause type collisions in client code. "
             "Consider renaming the model.",
-            cls.__name__
+            cls.__name__,
         )
         prefix = (
             f"// ⚠️ WARNING: '{cls.__name__}' conflicts with a browser-native TypeScript type.\n"

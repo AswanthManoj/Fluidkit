@@ -1,46 +1,47 @@
 import inspect
 import linecache
-from fastapi import FastAPI
-from fluidkit.models import FunctionMetadata
-from typing import Dict, List, Callable, Optional
-from fluidkit.utilities import generate_route_path
-from contextlib import asynccontextmanager, AsyncExitStack
+from collections.abc import Callable
+from contextlib import AsyncExitStack, asynccontextmanager
 
+from fastapi import FastAPI
+
+from fluidkit.models import FunctionMetadata
+from fluidkit.utilities import generate_route_path
 
 _preserved: dict[str, object] = {}
 
 
 def preserve(value_or_factory):
     """
-    Preserve a value across HMR module re-executions.
+        Preserve a value across HMR module re-executions.
 
-    Use this for expensive or stateful objects that should be initialized
-    once and never recreated when the module is hot-reloaded — database
-    connections, HTTP clients, loaded ML models, etc.
+        Use this for expensive or stateful objects that should be initialized
+        once and never recreated when the module is hot-reloaded — database
+        connections, HTTP clients, loaded ML models, etc.
 
-    Accepts either a direct value or a zero-argument factory callable.
-    If a factory is provided, it is only called once regardless of how
-    many times the module re-executes. If a direct value is provided,
-    it is stored on first execution and the new value is silently
-    discarded on subsequent reloads.
+        Accepts either a direct value or a zero-argument factory callable.
+        If a factory is provided, it is only called once regardless of how
+        many times the module re-executes. If a direct value is provided,
+        it is stored on first execution and the new value is silently
+        discarded on subsequent reloads.
 
-    The key is automatically derived from the calling module and variable
-    name — no manual key management needed.
+        The key is automatically derived from the calling module and variable
+        name — no manual key management needed.
 
-    Examples:
-```python
-        # Direct value — new instance created but discarded after first run
-        client = preserve(httpx.Client())
+        Examples:
+    ```python
+            # Direct value — new instance created but discarded after first run
+            client = preserve(httpx.Client())
 
-        # Factory — never constructed more than once
-        db = preserve(lambda: Database(url))
-        model = preserve(lambda: load_model("weights.pt"))
-```
+            # Factory — never constructed more than once
+            db = preserve(lambda: Database(url))
+            model = preserve(lambda: load_model("weights.pt"))
+    ```
 
-    Note:
-        Do not use preserve() for plain constants or variables you want
-        to update during development. Those update automatically via HMR.
-        preserve() is only for values that must survive re-execution.
+        Note:
+            Do not use preserve() for plain constants or variables you want
+            to update during development. Those update automatically via HMR.
+            preserve() is only for values that must survive re-execution.
     """
     frame = inspect.currentframe().f_back
     module = frame.f_globals.get("__name__", "__main__")
@@ -87,9 +88,9 @@ class FluidKitRegistry:
         self._lifespan_hooks: list[tuple] = []
         self._startup_hooks: list[Callable] = []
         self._shutdown_hooks: list[Callable] = []
-        self._route_handlers: Dict[str, Callable] = {}
-        self.functions: Dict[str, FunctionMetadata] = {}
-        self._on_register_callback: Optional[Callable[[FunctionMetadata], None]] = None
+        self._route_handlers: dict[str, Callable] = {}
+        self.functions: dict[str, FunctionMetadata] = {}
+        self._on_register_callback: Callable[[FunctionMetadata], None] | None = None
         self.app = self._create_app()
 
     def _create_app(self) -> FastAPI:
@@ -120,6 +121,7 @@ class FluidKitRegistry:
             lifespan=master_lifespan,
         )
         from fastapi.middleware.cors import CORSMiddleware
+
         app.add_middleware(
             CORSMiddleware,
             allow_origins=["*"],
@@ -143,10 +145,7 @@ class FluidKitRegistry:
         path = generate_route_path(metadata)
 
         if key in self.functions:
-            self.app.router.routes = [
-                r for r in self.app.router.routes
-                if getattr(r, 'path', None) != path
-            ]
+            self.app.router.routes = [r for r in self.app.router.routes if getattr(r, "path", None) != path]
 
         self.functions[key] = metadata
         self._route_handlers[key] = handler
@@ -165,7 +164,7 @@ class FluidKitRegistry:
     def get(self, module: str, name: str) -> FunctionMetadata | None:
         return self.functions.get(f"{module}#{name}")
 
-    def get_by_file(self, file_path: str) -> List[FunctionMetadata]:
+    def get_by_file(self, file_path: str) -> list[FunctionMetadata]:
         return [m for m in self.functions.values() if m.file_path == file_path]
 
     def unregister(self, module: str, name: str):
@@ -174,8 +173,7 @@ class FluidKitRegistry:
             metadata = self.functions[key]
             route_name = f"{metadata.decorator_type.value}_{metadata.name}"
             self.app.router.routes = [
-                r for r in self.app.router.routes
-                if not (hasattr(r, 'name') and r.name == route_name)
+                r for r in self.app.router.routes if not (hasattr(r, "name") and r.name == route_name)
             ]
             self.app.openapi_schema = None
             del self.functions[key]
@@ -187,54 +185,54 @@ class FluidKitRegistry:
 
     def on_startup(self, func: Callable) -> Callable:
         """
-        Register an async or sync function to run at app startup.
+                Register an async or sync function to run at app startup.
 
-        Example:
-```python
-            @on_startup
-            async def init_db():
-                global db
-                db = await connect("postgres://...")
-```
+                Example:
+        ```python
+                    @on_startup
+                    async def init_db():
+                        global db
+                        db = await connect("postgres://...")
+        ```
         """
         self._startup_hooks.append(func)
         return func
 
     def on_shutdown(self, func: Callable) -> Callable:
         """
-        Register an async or sync function to run at app shutdown.
+                Register an async or sync function to run at app shutdown.
 
-        Example:
-```python
-            @on_shutdown
-            async def cleanup():
-                await db.close()
-```
+                Example:
+        ```python
+                    @on_shutdown
+                    async def cleanup():
+                        await db.close()
+        ```
         """
         self._shutdown_hooks.append(func)
         return func
 
     def lifespan(self, func: Callable) -> Callable:
         """
-        Register a lifespan context manager for paired setup/teardown.
+                Register a lifespan context manager for paired setup/teardown.
 
-        The decorated function must be an async generator that yields once.
-        Optionally accepts the FastAPI app as a parameter.
+                The decorated function must be an async generator that yields once.
+                Optionally accepts the FastAPI app as a parameter.
 
-        Example:
-```python
-            @lifespan
-            async def manage_redis():
-                redis = await aioredis.from_url("redis://localhost")
-                yield
-                await redis.close()
+                Example:
+        ```python
+                    @lifespan
+                    async def manage_redis():
+                        redis = await aioredis.from_url("redis://localhost")
+                        yield
+                        await redis.close()
 
-            @lifespan
-            async def manage_db(app):
-                db = await connect(app.state.db_url)
-                yield
-                await db.close()
-```
+                    @lifespan
+                    async def manage_db(app):
+                        db = await connect(app.state.db_url)
+                        yield
+                        await db.close()
+        ```
         """
         sig = inspect.signature(func)
         has_app_param = len(sig.parameters) > 0

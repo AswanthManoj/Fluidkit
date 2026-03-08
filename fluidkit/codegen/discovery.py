@@ -1,11 +1,11 @@
 import logging
 from enum import Enum
-from pydantic import BaseModel
 from typing import get_type_hints
 
-from fluidkit.utilities import normalize_types
-from fluidkit.models import FieldAnnotation, FunctionMetadata, BaseType
+from pydantic import BaseModel
 
+from fluidkit.models import BaseType, FieldAnnotation, FunctionMetadata
+from fluidkit.utilities import normalize_types
 
 logger = logging.getLogger(__name__)
 

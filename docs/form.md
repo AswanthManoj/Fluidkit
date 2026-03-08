@@ -1,6 +1,6 @@
 # @form
 
-Use `@form` to write data via `<form>` elements. Forms work without JavaScript (progressive enhancement), support file uploads, and can trigger redirects.
+Use `@form` to write data via `<form>` elements. Forms work without JavaScript (progressive enhancement), support file uploads, nested types, and can trigger redirects.
 
 ## Basic usage
 ```python
@@ -46,9 +46,50 @@ async def create_profile(name: str, age: int, bio: str) -> None:
 
 The `.as(...)` method sets the correct input type, the `name` attribute used to construct form data, and the `aria-invalid` state for validation.
 
+Fields can be nested in objects and arrays. Under the hood, SvelteKit uses dot notation and bracket notation for field names (e.g. `info.height`, `tags[0]`), and prefixes boolean and number fields with `b:` and `n:` respectively to signal type coercion.
+
+## Nested types
+
+`@form` supports Pydantic models as parameters. SvelteKit parses the flat form fields into structured objects before they reach your handler, so nested models work naturally:
+```python
+from typing import Optional
+from pydantic import BaseModel
+from fluidkit import form
+
+class Info(BaseModel):
+    height: int
+    likesDogs: Optional[bool] = None
+
+@form
+async def create_profile(name: str, age: int, tags: list[str], info: Info) -> None:
+    print(name, age, tags, info)
+```
+```svelte
+<script>
+  import { create_profile } from '$lib/profiles.remote';
+
+  const { name, age, tags, info } = create_profile.fields;
+</script>
+
+<form {...create_profile}>
+  <input {...name.as('text')} placeholder="Name" />
+  <input {...age.as('number')} placeholder="Age" />
+
+  <input {...tags[0].as('text')} placeholder="Tag 1" />
+  <input {...tags[1].as('text')} placeholder="Tag 2" />
+
+  <input {...info.height.as('number')} placeholder="Height (cm)" />
+  <input {...info.likesDogs.as('checkbox')} /> Likes dogs
+
+  <button>Save</button>
+</form>
+```
+
+Your Python handler receives `info` as an `Info` instance, `tags` as a `list[str]`, and primitives coerced to their annotated types. No manual parsing needed.
+
 ## File uploads
 
-Use `FileUpload` for file parameters. On the Svelte side, this maps to a file input:
+Use `FileUpload` for file parameters. Add `enctype="multipart/form-data"` to the form when using file inputs:
 ```python
 from fluidkit import form, FileUpload
 
@@ -66,7 +107,40 @@ async def upload_avatar(username: str, photo: FileUpload) -> None:
 </form>
 ```
 
-Add `enctype="multipart/form-data"` to the form when using file inputs. `FileUpload` extends FastAPI's `UploadFile`, so all its methods (`read()`, `filename`, `content_type`, etc.) are available.
+`FileUpload` extends FastAPI's `UploadFile`, so all its methods (`read()`, `filename`, `content_type`, etc.) are available.
+
+Files can be mixed with nested types and arrays:
+```python
+from pydantic import BaseModel
+from fluidkit import form, FileUpload
+
+class Info(BaseModel):
+    height: int
+    likesDogs: bool
+
+@form
+async def create_profile(name: str, info: Info, photo: FileUpload, docs: list[FileUpload]) -> None:
+    print(name, info, photo.filename, [d.filename for d in docs])
+```
+```svelte
+<script>
+  import { create_profile } from '$lib/profiles.remote';
+
+  const { name, info, photo, docs } = create_profile.fields;
+</script>
+
+<form {...create_profile} enctype="multipart/form-data">
+  <input {...name.as('text')} placeholder="Name" />
+  <input {...info.height.as('number')} placeholder="Height" />
+  <input {...info.likesDogs.as('checkbox')} /> Likes dogs
+  <input {...photo.as('file')} />
+  <input {...docs[0].as('file')} />
+  <input {...docs[1].as('file')} />
+  <button>Submit</button>
+</form>
+```
+
+When files are present, FluidKit sends structured data as JSON alongside file fields in a multipart request. When no files are present, the entire payload is sent as JSON. This is handled automatically — you don't need to think about the wire format.
 
 ## Redirects
 
@@ -210,14 +284,13 @@ When using `enhance`, the form is not automatically reset — call `form.reset()
 
 ## Supported parameter types
 
-`@form` parameters must be types that can be represented as form fields:
+`@form` parameters can be any type that maps to form fields:
 
 - `str`, `int`, `float`, `bool` — primitive inputs
 - `FileUpload` — file inputs
-- `list[str]`, `list[int]`, etc. — multiple inputs with the same field name
-- `Optional[...]` — optional fields
-
-For complex nested types (Pydantic models, dicts, unions), use [`@command`](command.md) instead. This is a FluidKit-specific constraint — SvelteKit's native forms support nested objects and arrays, but FluidKit's codegen currently limits forms to flat field structures.
+- `list[str]`, `list[int]`, `list[FileUpload]`, etc. — multiple inputs with array notation
+- `Optional[...]` — optional fields (required for unchecked checkboxes)
+- Pydantic `BaseModel` — nested objects via dot notation fields
 
 ## Next steps
 
