@@ -1,34 +1,37 @@
+import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+import inspect
+import concurrent.futures
 from functools import update_wrapper
-from typing import ParamSpec, TypeVar
+from typing import overload, ParamSpec, TypeVar
+from collections.abc import Awaitable, Callable
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from fluidkit.context import (
-    FluidKitContext,
-    reset_context,
-    reset_request_event,
     set_context,
+    reset_context,
+    FluidKitContext,
+    reset_request_event,
 )
 from fluidkit.exceptions import HTTPError, Redirect
 from fluidkit.models import (
     DecoratorType,
-    create_batch_query_response,
-    create_command_response,
     create_error_response,
     create_query_response,
+    create_command_response,
     create_redirect_response,
+    create_batch_query_response,
 )
 from fluidkit.registry import fluidkit_registry
-from fluidkit.types import RemoteProxy
+from fluidkit.types import RemoteProxy, AsyncRemoteProxy
 from fluidkit.utilities import (
-    build_json_response,
     extract_metadata,
-    inject_request_if_needed,
     parse_request_data,
+    build_json_response,
     setup_request_context,
+    inject_request_if_needed,
 )
 
 T = TypeVar("T")
@@ -65,23 +68,22 @@ def _http_error_response(e: HTTPError) -> JSONResponse:
 
 
 def _wrap_and_register(func, metadata, sig):
-    """Create the RemoteProxy wrapper. Shared by all decorators."""
+    """Create the RemoteProxy or AsyncRemoteProxy wrapper. Shared by all decorators."""
+    proxy_cls = AsyncRemoteProxy if inspect.iscoroutinefunction(func) else RemoteProxy
 
-    def wrapper(*args: P.args, **kwargs: P.kwargs) -> RemoteProxy[T]:
-        return RemoteProxy(
-            sig=sig,
-            args=args,
-            kwargs=kwargs,
-            executor=func,
+    def wrapper(*args, **kwargs):
+        return proxy_cls(
+            sig=sig, args=args,
+            kwargs=kwargs, executor=func,
             func_name=f"{metadata.module}#{metadata.name}",
         )
-
+    
     update_wrapper(wrapper, func)
     return wrapper
 
 
 def _make_remote(
-    func: Callable[P, Awaitable[T]],
+    func: Callable,
     decorator_type: DecoratorType,
     *,
     allow_set_cookies: bool = False,
@@ -119,13 +121,15 @@ def _make_remote(
                 body = await request.json()
 
             kwargs = inject_request_if_needed(
-                sig=sig,
-                args=(),
-                kwargs=body,
+                sig=sig, args=(), kwargs=body,
                 request_event=request_event,
                 request_param_name=request_param_name,
             )
-            result = await func(**kwargs)
+
+            if inspect.iscoroutinefunction(func):
+                result = await func(**kwargs)
+            else:
+                result = await asyncio.to_thread(func, **kwargs)
 
             if use_context:
                 response_data = create_command_response(result, ctx.mutations, cookies.serialize())
@@ -196,13 +200,26 @@ class query:
             return await db.get_user(user_id)
     ```
     """
+    @overload
+    def __new__(cls, func: Callable[P, Awaitable[T]]) -> Callable[P, AsyncRemoteProxy[T]]: ...
 
-    def __new__(cls, func: Callable[P, Awaitable[T]]) -> Callable[P, RemoteProxy[T]]:
+    @overload
+    def __new__(cls, func: Callable[P, T]) -> Callable[P, RemoteProxy[T]]: ...
+
+    def __new__(cls, func):
         wrapper, _ = _make_remote(func, DecoratorType.QUERY)
         return wrapper
+    
+    @staticmethod
+    @overload
+    def batch(func: Callable[P, Awaitable[T]]) -> Callable[P, AsyncRemoteProxy[T]]: ...
 
     @staticmethod
-    def batch(func: Callable[P, Awaitable[T]]) -> Callable[P, RemoteProxy[T]]:
+    @overload
+    def batch(func: Callable[P, T]) -> Callable[P, RemoteProxy[T]]: ...
+
+    @staticmethod
+    def batch(func):
         """
         Create a batched remote query function.
 
@@ -219,7 +236,6 @@ class query:
                 return lambda city_id: lookup.get(city_id)
         ```
         """
-
         metadata, request_param_name, sig = extract_metadata(func=func, decorator_type=DecoratorType.QUERY_BATCH)
 
         async def fastapi_handler(request: Request):
@@ -230,7 +246,11 @@ class query:
             try:
                 body = await request.json()
                 args_list = body.get("args", [])
-                result = await func(args_list)
+
+                if inspect.iscoroutinefunction(func):
+                    result = await func(args_list)
+                else:
+                    result = await asyncio.to_thread(func, args_list)
 
                 if not callable(result):
                     param_name = metadata.parameters[0].name if metadata.parameters else "items"
@@ -259,11 +279,16 @@ class query:
         fastapi_handler.__name__ = func.__name__
         fastapi_handler.__doc__ = func.__doc__
 
-        async def _single_executor(**kwargs):
-            """Wrap batch function for single-item calls (refresh/set)."""
-            single_arg = next(iter(kwargs.values()))
-            resolver = await func([single_arg])
-            return resolver(single_arg, 0)
+        if inspect.iscoroutinefunction(func):
+            async def _single_executor(**kwargs):
+                single_arg = next(iter(kwargs.values()))
+                resolver = await func([single_arg])
+                return resolver(single_arg, 0)
+        else:
+            def _single_executor(**kwargs):
+                single_arg = next(iter(kwargs.values()))
+                resolver = func([single_arg])
+                return resolver(single_arg, 0)
 
         update_wrapper(_single_executor, func)
 
@@ -286,9 +311,13 @@ class command:
             await get_posts().refresh()
     ```
     """
+    @overload
+    def __new__(cls, func: Callable[P, Awaitable[T]]) -> Callable[P, AsyncRemoteProxy[T]]: ...
 
-    def __new__(cls, func: Callable[P, Awaitable[T]]) -> Callable[P, RemoteProxy[T]]:
+    @overload
+    def __new__(cls, func: Callable[P, T]) -> Callable[P, RemoteProxy[T]]: ...
 
+    def __new__(cls, func):
         wrapper, _ = _make_remote(
             func,
             DecoratorType.COMMAND,
@@ -314,8 +343,13 @@ class form:
             raise Redirect(303, '/posts')
     ```
     """
+    @overload
+    def __new__(cls, func: Callable[P, Awaitable[T]]) -> Callable[P, AsyncRemoteProxy[T]]: ...
 
-    def __new__(cls, func: Callable[P, Awaitable[T]]) -> Callable[P, RemoteProxy[T]]:
+    @overload
+    def __new__(cls, func: Callable[P, T]) -> Callable[P, RemoteProxy[T]]: ...
+
+    def __new__(cls, func):
         wrapper, _ = _make_remote(
             func,
             DecoratorType.FORM,
@@ -347,12 +381,31 @@ class prerender:
             return await db.get_post(slug)
     ```
     """
+    @overload
+    def __new__(cls, func: Callable[P, Awaitable[T]]) -> Callable[P, AsyncRemoteProxy[T]]: ...
+
+    @overload
+    def __new__(cls, func: Callable[P, T]) -> Callable[P, RemoteProxy[T]]: ...
 
     def __new__(cls, func=None, *, inputs=None, dynamic=False):
-        def decorator(fn: Callable[P, Awaitable[T]]) -> Callable[P, RemoteProxy[T]]:
+        def decorator(fn):
             wrapper, metadata = _make_remote(fn, decorator_type=DecoratorType.PRERENDER)
-            metadata.prerender_inputs = inputs
             metadata.prerender_dynamic = dynamic
+
+            if callable(inputs):
+                result = inputs()
+                if inspect.isawaitable(result):
+                    try:
+                        asyncio.get_running_loop()
+                        with concurrent.futures.ThreadPoolExecutor(1) as pool:
+                            metadata.prerender_inputs = pool.submit(asyncio.run, result).result()
+                    except RuntimeError:
+                        metadata.prerender_inputs = asyncio.run(result)
+                else:
+                    metadata.prerender_inputs = result
+            else:
+                metadata.prerender_inputs = inputs
+
             return wrapper
 
         if func is None:

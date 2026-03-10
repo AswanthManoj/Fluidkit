@@ -71,7 +71,6 @@ class RemoteProxy(Generic[T]):
 
         bound = self._sig.bind_partial(*self._args, **self._kwargs)
         kwargs = dict(bound.arguments)
-
         if inject_request:
             for param_name, param in self._sig.parameters.items():
                 if param.annotation is RequestEvent and param_name not in kwargs:
@@ -80,7 +79,6 @@ class RemoteProxy(Generic[T]):
                     except RuntimeError:
                         pass
                     break
-
         return kwargs
 
     def _get_serializable_kwargs(self) -> dict:
@@ -91,9 +89,7 @@ class RemoteProxy(Generic[T]):
     def _get_context_or_warn(self, method_name: str):
         """Return FluidKitContext if available, else warn and return None."""
         import warnings
-
         from fluidkit.context import get_context
-
         try:
             return get_context()
         except RuntimeError:
@@ -106,18 +102,37 @@ class RemoteProxy(Generic[T]):
 
     def __await__(self) -> Generator[Any, None, T]:
         kwargs = self._get_normalized_kwargs(inject_request=True)
-        return self._executor(**kwargs).__await__()
+        async def _wrap():
+            return self._executor(**kwargs)
+        return _wrap().__await__()
 
-    async def refresh(self) -> T:
+    def refresh(self) -> T:
         kwargs = self._get_normalized_kwargs(inject_request=True)
-        result = await self._executor(**kwargs)
-
+        result = self._executor(**kwargs)
         ctx = self._get_context_or_warn("refresh")
         if ctx is not None:
             ctx.add_mutation(MutationType.REFRESH, self._func_name, self._get_serializable_kwargs(), result)
-
         return result
 
+    def set(self, data: T) -> None:
+        ctx = self._get_context_or_warn("set")
+        if ctx is not None:
+            ctx.add_mutation(MutationType.SET, self._func_name, self._get_serializable_kwargs(), data)
+
+
+class AsyncRemoteProxy(RemoteProxy[T]):
+    def __await__(self) -> Generator[Any, None, T]:
+        kwargs = self._get_normalized_kwargs(inject_request=True)
+        return self._executor(**kwargs).__await__()
+    
+    async def refresh(self) -> T:
+        kwargs = self._get_normalized_kwargs(inject_request=True)
+        result = await self._executor(**kwargs)
+        ctx = self._get_context_or_warn("refresh")
+        if ctx is not None:
+            ctx.add_mutation(MutationType.REFRESH, self._func_name, self._get_serializable_kwargs(), result)
+        return result
+    
     async def set(self, data: T) -> None:
         ctx = self._get_context_or_warn("set")
         if ctx is not None:

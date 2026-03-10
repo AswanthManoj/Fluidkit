@@ -287,12 +287,7 @@ def _render_prerender(w: TSWriter, fn: FunctionMetadata) -> None:
     return_type = annotation_to_ts(fn.return_annotation)
     signature = _build_signature(fn, "prerender", param_style="flat")
 
-    has_options = fn.prerender_dynamic or (fn.prerender_inputs is not None and not callable(fn.prerender_inputs))
-
-    if callable(fn.prerender_inputs):
-        logger.warning(
-            "@prerender '%s' has callable inputs — cannot serialize to codegen, skipping inputs option", fn.name
-        )
+    has_options = fn.prerender_dynamic or fn.prerender_inputs is not None
 
     def _body():
         w.line("const { cookies: _fk_cookies } = getRequestEvent();")
