@@ -82,7 +82,17 @@ async def get_post(slug: str) -> Post:
     ...
 ```
 
-> Callable inputs are evaluated at build time but cannot be serialized into the generated `.remote.ts` file. Static lists are preferred when possible.
+Async callables work too:
+```python
+async def get_all_slugs():
+    return await db.fetch_slugs()
+
+@prerender(inputs=get_all_slugs)
+async def get_post(slug: str) -> Post:
+    ...
+```
+
+> Callable inputs — including async callables — are resolved at decoration time and serialized as static lists in the generated `.remote.ts` file.
 
 ## Dynamic fallback
 
@@ -126,7 +136,6 @@ Use `@prerender` with `dynamic=True` for a hybrid approach — prerender known c
 
 - Prerender functions cannot set cookies (read-only, same as `@query`)
 - Prerender functions do not support `.refresh()` or `.set()` — data is static
-- Callable `inputs` work at build time but won't appear in the generated `.remote.ts`
 
 ## Next steps
 

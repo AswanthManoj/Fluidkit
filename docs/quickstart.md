@@ -122,6 +122,8 @@ When you decorated functions with `@query`, `@command`, and `@form`, FluidKit:
 
 The Svelte side works exactly like native SvelteKit remote functions — `await` in templates, form spreading, field helpers — because that's exactly what the generated code is.
 
+All four decorators support both `async` and regular sync functions. Use `async def` when you need `await` — for database calls, HTTP requests, or `.refresh()` and `.set()`. Use plain `def` for simple synchronous logic. FluidKit handles both transparently.
+
 ## Next steps
 
 - **[@query](query.md)** — arguments, validation, refresh
