@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fluidkit"
-version = "1.2.0"
+version = "1.3.0"
 description = "Web development for the Pythonist"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -29,6 +29,7 @@ dependencies = [
     "python-multipart>=0.0.22",
     "typer>=0.16.0",
     "uvicorn>=0.41.0",
+    "websockets>=16.0",
 ]
 
 [project.scripts]
@@ -44,7 +45,7 @@ Issues = "https://github.com/AswanthManoj/Fluidkit/issues"
 include = ["fluidkit*"]
 
 [tool.setuptools.package-data]
-fluidkit = ["runtime/*.ts", "runtime/*.svelte", "runtime/.gitignore.template", "runtime/templates/*", "icon.svg"]
+fluidkit = ["runtime/*.ts", "runtime/*.svelte", "runtime/.gitignore.template", "runtime/templates/*", "icon.svg","explorer/static/**/*"]
 
 [tool.ruff]
 line-length = 120

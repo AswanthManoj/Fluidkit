@@ -29,4 +29,5 @@ __all__ = [
     "FileUpload",
     "RequestEvent",
     "get_request_event",
+    "__version__"
 ]

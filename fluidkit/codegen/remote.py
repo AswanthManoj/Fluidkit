@@ -2,9 +2,10 @@ import json
 import logging
 from pathlib import Path
 
+from fluidkit.utilities import generate_route_path
 from fluidkit.codegen.ts import GENERATED_FILE_WARNING, TSWriter, annotation_to_ts, module_to_namespace
 from fluidkit.models import ContainerType, DecoratorType, FieldAnnotation, FunctionMetadata, ParameterMetadata
-from fluidkit.utilities import generate_route_path
+
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +113,7 @@ def _render_imports(
         w.line(f"import {{ {', '.join(sorted(registry_imports))} }} from '$fluidkit/registry';")
 
     w.line("import { BASE_URL } from '$fluidkit/config';")
+    w.line("import { signRequest } from '$fluidkit/auth';")
 
     if custom_types:
         by_namespace: dict[str, list[str]] = {}
@@ -163,6 +165,7 @@ def _render_fetch(w: TSWriter, route: str, params: list[ParameterMetadata]) -> N
         with w.block("headers: {", "},"):
             w.line("'Content-Type': 'application/json',")
             w.line("'Cookie': _fk_cookies.getAll().map(c => `${c.name}=${c.value}`).join('; '),")
+            w.line("'X-FluidKit-Token': signRequest(),")
         w.line(f"body: {_ts_body(params)},")
 
 
@@ -175,6 +178,7 @@ def _render_form_fetch(w: TSWriter, route: str) -> None:
         with w.block("headers: {", "},"):
             w.line("'Content-Type': 'application/json',")
             w.line("'Cookie': _fk_cookies.getAll().map(c => `${c.name}=${c.value}`).join('; '),")
+            w.line("'X-FluidKit-Token': signRequest(),")
         w.line("body: JSON.stringify(data),")
     w.dedent()
     w.line("} else {")
@@ -248,6 +252,7 @@ def _render_query_batch(w: TSWriter, fn: FunctionMetadata) -> None:
             with w.block("headers: {", "},"):
                 w.line("'Content-Type': 'application/json',")
                 w.line("'Cookie': _fk_cookies.getAll().map(c => `${c.name}=${c.value}`).join('; '),")
+                w.line("'X-FluidKit-Token': signRequest(),")
             w.line(f"body: JSON.stringify({{ args: {param.name} }}),")
         _render_error_block(w)
         w.line("const _fk_body = await _fk_res.json();")

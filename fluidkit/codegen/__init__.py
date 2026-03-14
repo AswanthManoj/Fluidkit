@@ -1,11 +1,12 @@
 import logging
 from pathlib import Path
 
-from fluidkit.codegen.discovery import discover_all_classes
-from fluidkit.codegen.remote import generate_remote_files
 from fluidkit.codegen.renderers import render_class
-from fluidkit.codegen.ts import GENERATED_FILE_WARNING, TSWriter, module_to_namespace
+from fluidkit.codegen.remote import generate_remote_files
+from fluidkit.codegen.discovery import discover_all_classes
 from fluidkit.models import BaseType, FieldAnnotation, FunctionMetadata
+from fluidkit.codegen.ts import GENERATED_FILE_WARNING, TSWriter, module_to_namespace
+
 
 logger = logging.getLogger(__name__)
 
@@ -83,10 +84,10 @@ def _run_codegen(metadata: FunctionMetadata, registry, base_url: str, schema_out
 
 
 def watch(registry, base_url: str, schema_output: str):
-    def _on_register(metadata: FunctionMetadata):
-        _run_codegen(metadata, registry, base_url, schema_output)
+    def _on_change(event: dict):
+        _run_codegen(event["metadata"], registry, base_url, schema_output)
 
-    registry.on_register(_on_register)
+    registry.on_change(_on_change)
 
 
 def generate(
