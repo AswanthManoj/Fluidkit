@@ -1,10 +1,11 @@
-import asyncio
-import importlib.util
+import os
 import sys
-import threading
 import time
-from contextlib import contextmanager
+import asyncio
+import threading
+import importlib.util
 from pathlib import Path
+from contextlib import contextmanager
 
 from fluidkit import __version__
 from fluidkit.registry import fluidkit_registry
@@ -56,18 +57,23 @@ async def _stream(stream, prefix: str, color):
 
 
 async def _run_servers(config: dict, npm_command: str, hmr: bool = True) -> None:
+    import secrets
     from fluidkit.codegen import generate
+    from fluidkit.explorer import mount, notify_change
     from fluidkit.codegen import watch as codegen_watch
+    from fluidkit.cli.scaffold import copy_runtime_files
+
+    os.environ.setdefault("FLUIDKIT_SECRET", secrets.token_urlsafe(32))
 
     load_entry(config["entry"])
     fluidkit_registry.dev = True
+    
+    mount(fluidkit_registry.app, fluidkit_registry)
+    fluidkit_registry.on_change(notify_change)
 
     base_url = f"http://{display_host(config)}:{config['backend_port']}"
 
-    from fluidkit.cli.scaffold import copy_runtime_files
-
     copy_runtime_files(schema_output=config["schema_output"])
-
     generate(fluidkit_registry.functions, base_url=base_url, schema_output=config["schema_output"])
     codegen_watch(fluidkit_registry, base_url=base_url, schema_output=config["schema_output"])
 
@@ -88,14 +94,15 @@ async def _run_servers(config: dict, npm_command: str, hmr: bool = True) -> None
 
     setup_logging()
 
+    # Start vite first — it doesn't need the backend during startup
+    proc = await run_node_tool_async("npm", ["run", npm_command])
+
     with _uvicorn_server(
         fluidkit_registry.app,
         host=config["host"],
         port=config["backend_port"],
         reload=not hmr,
     ):
-        proc = await run_node_tool_async("npm", ["run", npm_command])
-
         host = display_host(config)
         header_shown = False
 
@@ -142,16 +149,17 @@ def run_preview(config: dict) -> None:
 
 
 def run_build(config: dict) -> None:
+    import secrets
     from fluidkit.codegen import generate
+    from fluidkit.cli.scaffold import copy_runtime_files
+
+    os.environ.setdefault("FLUIDKIT_SECRET", secrets.token_urlsafe(32))
 
     load_entry(config["entry"])
 
     base_url = f"http://localhost:{config['backend_port']}"
 
-    from fluidkit.cli.scaffold import copy_runtime_files
-
     copy_runtime_files(schema_output=config["schema_output"])
-
     generate(
         functions=fluidkit_registry.functions,
         base_url=base_url,

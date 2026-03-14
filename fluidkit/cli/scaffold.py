@@ -1,17 +1,17 @@
-import shutil
 import sys
+import shutil
 from pathlib import Path
 
+from .utils import _COLORS, echo, get_node_tool
 from .config import load_config, write_default_config
 from .patch import patch_svelte_config, patch_svelte_experimental, patch_vite_config
-from .utils import _COLORS, echo, get_node_tool
 
 
 def copy_runtime_files(schema_output: str = "src/lib/fluidkit") -> None:
     runtime_src = Path(__file__).parent.parent / "runtime"
     dest = Path(schema_output)
     dest.mkdir(parents=True, exist_ok=True)
-    for file in ("registry.ts", "types.ts"):
+    for file in ("registry.ts", "types.ts", "auth.ts"):
         src = runtime_src / file
         if src.exists():
             shutil.copy2(src, dest / file)

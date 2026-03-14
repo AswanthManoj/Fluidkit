@@ -1,15 +1,13 @@
 import ast
-import logging
-import queue
 import sys
-import threading
+import queue
 import types
+import logging
+import threading
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-
-# ── Module-level state ────────────────────────────────────────────────────────
 
 _route_lock = threading.Lock()
 _watch_paths: tuple[str, ...] = ("./",)
@@ -17,15 +15,9 @@ _pending_attach: queue.Queue = queue.Queue()
 _binding_map: dict[str, list[tuple[str, str]]] = {}
 
 
-# ── Route safety ──────────────────────────────────────────────────────────────
-
-
 def _schedule_route_op(op):
     with _route_lock:
         op()
-
-
-# ── Utils ─────────────────────────────────────────────────────────────────────
 
 
 def _is_user_module(filename: str) -> bool:
@@ -57,7 +49,22 @@ def _resolve_module(node_module: str, node_level: int, importing_module: str) ->
     return parent or node_module
 
 
-# ── Binding tracker ───────────────────────────────────────────────────────────
+def _reconcile_module(module_name: str):
+    """Remove registry entries for functions no longer present in the module."""
+    from fluidkit.registry import fluidkit_registry
+
+    module = sys.modules.get(module_name)
+    registered = [
+        (key, meta)
+        for key, meta in list(fluidkit_registry.functions.items())
+        if meta.module == module_name
+    ]
+
+    for key, metadata in registered:
+        if module is None or not hasattr(module, metadata.name):
+            def op(m=metadata.module, n=metadata.name):
+                fluidkit_registry.unregister(m, n)
+            _schedule_route_op(op)
 
 
 def _track_imports(module_name: str, filename: str):
@@ -146,33 +153,20 @@ def _patch_jurigged_for_relative_imports():
     jct.LineDefinition.evaluate = patched_evaluate
 
 
-# ── HMRProxy ──────────────────────────────────────────────────────────────────
-
-
 class HMRProxy:
-    __slots__ = ("_code", "_func", "_name", "_params", "_module", "_metadata")
+    __slots__ = ("_func", "_params", "_metadata")
 
     def __init__(self, func, metadata):
         self._func = func
-        self._name = func.__name__
-        self._code = func.__code__
         self._params = list(func.__code__.co_varnames[: func.__code__.co_argcount])
-        self._module = metadata.module
         self._metadata = metadata
 
     def __conform__(self, new_func):
         from fluidkit.registry import fluidkit_registry
 
+        # Deletion — just clean up proxy. Actual unregister
+        # is handled by _reconcile_module in _on_postrun.
         if new_func is None:
-            key = f"{self._module}#{self._name}"
-            if fluidkit_registry.functions.get(key) is self._metadata:
-                module, name, metadata = self._module, self._name, self._metadata
-
-                def op():
-                    fluidkit_registry.unregister(module, name)
-                    fluidkit_registry._fire_on_register(metadata)
-
-                _schedule_route_op(op)
             if hasattr(self._func, "_hmr_proxy"):
                 del self._func._hmr_proxy
             return
@@ -181,23 +175,13 @@ class HMRProxy:
         if not isinstance(new_code, types.CodeType):
             return
 
+        new_params = list(new_code.co_varnames[: new_code.co_argcount])
+        self._params = new_params
+
         if isinstance(new_func, types.CodeType):
-            self._code = new_code
-            self._params = list(new_code.co_varnames[: new_code.co_argcount])
             return
 
-        new_params = list(new_code.co_varnames[: new_code.co_argcount])
-        old_params = self._params
-        self._code = new_code
-        self._params = new_params
         self._func = new_func
-
-        if old_params != new_params:
-            fluidkit_registry._fire_on_register(self._metadata)
-
-
-# ── Conform attachment ────────────────────────────────────────────────────────
-
 
 def attach_conform(metadata):
     module = sys.modules.get(metadata.module)
@@ -208,11 +192,9 @@ def attach_conform(metadata):
         return
     actual_func = getattr(module_level, "__wrapped__", module_level)
     if hasattr(actual_func, "_hmr_proxy"):
+        actual_func._hmr_proxy._metadata = metadata
         return
     actual_func._hmr_proxy = HMRProxy(actual_func, metadata)
-
-
-# ── Registry patch ────────────────────────────────────────────────────────────
 
 
 def _patch_registry(registry):
@@ -228,22 +210,17 @@ def _patch_registry(registry):
     registry.register = safe_register
 
 
-# ── Watcher callbacks ─────────────────────────────────────────────────────────
-
-
 def _on_postrun(path: str, cf) -> None:
     module_name = _module_name_from_path(path)
     if module_name:
-        _track_imports(module_name, path)  # re-parse — picks up newly added imports
+        _track_imports(module_name, path)
         _rebind_changed(module_name)
+        _reconcile_module(module_name)
     while not _pending_attach.empty():
         try:
             attach_conform(_pending_attach.get_nowait())
         except queue.Empty:
             break
-
-
-# ── Setup ─────────────────────────────────────────────────────────────────────
 
 
 def setup(watcher, watch_paths: tuple[str, ...] = ("./",)):

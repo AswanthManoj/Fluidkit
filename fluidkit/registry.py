@@ -1,14 +1,23 @@
+import os
+import time
+import hmac
+import logging
 import inspect
+import hashlib
 import linecache
-from collections.abc import Callable
-from contextlib import AsyncExitStack, asynccontextmanager
-
 from fastapi import FastAPI
+from collections.abc import Callable
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from fluidkit.models import FunctionMetadata
 from fluidkit.utilities import generate_route_path
 
+
 _preserved: dict[str, object] = {}
+logger = logging.getLogger(__name__)
 
 
 def preserve(value_or_factory):
@@ -71,6 +80,39 @@ async def _invoke(fn, *args):
         fn(*args)
 
 
+class _FluidKitAuthMiddleware(BaseHTTPMiddleware):
+    WINDOW = 5
+
+    async def dispatch(self, request: Request, call_next):
+        if not request.url.path.startswith("/remote/"):
+            return await call_next(request)
+
+        token = request.headers.get("X-FluidKit-Token")
+        if not token:
+            return JSONResponse({"message": "Missing authentication token"}, status_code=401)
+
+        parts = token.split(".", 1)
+        if len(parts) != 2:
+            return JSONResponse({"message": "Malformed authentication token"}, status_code=401)
+
+        ts_str, signature = parts
+        try:
+            ts = int(ts_str)
+        except ValueError:
+            return JSONResponse({"message": "Malformed authentication token"}, status_code=401)
+
+        if abs(time.time() - ts) > self.WINDOW:
+            return JSONResponse({"message": "Authentication token expired"}, status_code=401)
+
+        secret = os.environ.get("FLUIDKIT_SECRET", "")
+        expected = hmac.new(secret.encode(), ts_str.encode(), hashlib.sha256).hexdigest()
+
+        if not hmac.compare_digest(signature, expected):
+            return JSONResponse({"message": "Invalid authentication token"}, status_code=401)
+
+        return await call_next(request)
+
+
 class FluidKitRegistry:
     _instance = None
 
@@ -90,7 +132,7 @@ class FluidKitRegistry:
         self._shutdown_hooks: list[Callable] = []
         self._route_handlers: dict[str, Callable] = {}
         self.functions: dict[str, FunctionMetadata] = {}
-        self._on_register_callback: Callable[[FunctionMetadata], None] | None = None
+        self._on_change_callbacks: list[Callable[[dict], None]] = []
         self.app = self._create_app()
 
     def _create_app(self) -> FastAPI:
@@ -98,11 +140,16 @@ class FluidKitRegistry:
 
         @asynccontextmanager
         async def master_lifespan(app):
-            # User @on_startup hooks — in registration order
+            if not os.environ.get("FLUIDKIT_SECRET"):
+                logger.warning(
+                    "FLUIDKIT_SECRET is not set. "
+                    "Remote function routes will reject all requests. "
+                    "Set this environment variable to the same value in both FastAPI and SvelteKit."
+                )
+
             for fn in registry._startup_hooks:
                 await _invoke(fn)
 
-            # User @lifespan context managers — enter in order, exit in reverse
             async with AsyncExitStack() as stack:
                 for cm, has_app_param in registry._lifespan_hooks:
                     if has_app_param:
@@ -111,35 +158,26 @@ class FluidKitRegistry:
                         await stack.enter_async_context(cm())
                 yield
 
-            # User @on_shutdown hooks — in registration order
             for fn in registry._shutdown_hooks:
                 await _invoke(fn)
 
         app = FastAPI(
-            version="0.1.0",
-            title="FluidKit Remote Functions",
+            title="FluidKit Generated Remote Functions",
             lifespan=master_lifespan,
         )
-        from fastapi.middleware.cors import CORSMiddleware
-
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=["*"],
-            allow_methods=["*"],
-            allow_headers=["*"],
-            allow_credentials=True,
-        )
+        app.add_middleware(_FluidKitAuthMiddleware)
         return app
 
-    # ── Registration ──────────────────────────────────────────────────────
+    def on_change(self, callback: Callable[[dict], None]):
+        """Register a callback that receives {"action": "register"|"unregister", "key": str, "metadata": FunctionMetadata}."""
+        self._on_change_callbacks.append(callback)
 
-    def on_register(self, callback: Callable[[FunctionMetadata], None]):
-        self._on_register_callback = callback
-
-    def _fire_on_register(self, metadata: FunctionMetadata):
-        if self._on_register_callback:
-            self._on_register_callback(metadata)
-
+    def _notify(self, action: str, metadata: FunctionMetadata):
+        key = f"{metadata.module}#{metadata.name}"
+        event = {"action": action, "key": key, "metadata": metadata}
+        for cb in self._on_change_callbacks:
+            cb(event)
+        
     def register(self, metadata: FunctionMetadata, handler: Callable):
         key = f"{metadata.module}#{metadata.name}"
         path = generate_route_path(metadata)
@@ -158,8 +196,7 @@ class FluidKitRegistry:
             name=f"{metadata.decorator_type.value}_{metadata.name}",
         )
         self.app.openapi_schema = None
-
-        self._fire_on_register(metadata)
+        self._notify("register", metadata)
 
     def get(self, module: str, name: str) -> FunctionMetadata | None:
         return self.functions.get(f"{module}#{name}")
@@ -179,20 +216,18 @@ class FluidKitRegistry:
             del self.functions[key]
             if key in self._route_handlers:
                 del self._route_handlers[key]
-            self._fire_on_register(metadata)
-
-    # ── Lifecycle hooks ───────────────────────────────────────────────────
+            self._notify("unregister", metadata)
 
     def on_startup(self, func: Callable) -> Callable:
         """
-                Register an async or sync function to run at app startup.
+        Register an async or sync function to run at app startup.
 
-                Example:
+        Example:
         ```python
-                    @on_startup
-                    async def init_db():
-                        global db
-                        db = await connect("postgres://...")
+        @on_startup
+        async def init_db():
+            global db
+            db = await connect("postgres://...")
         ```
         """
         self._startup_hooks.append(func)
@@ -200,13 +235,13 @@ class FluidKitRegistry:
 
     def on_shutdown(self, func: Callable) -> Callable:
         """
-                Register an async or sync function to run at app shutdown.
+        Register an async or sync function to run at app shutdown.
 
-                Example:
+        Example:
         ```python
-                    @on_shutdown
-                    async def cleanup():
-                        await db.close()
+        @on_shutdown
+        async def cleanup():
+            await db.close()
         ```
         """
         self._shutdown_hooks.append(func)
@@ -214,24 +249,24 @@ class FluidKitRegistry:
 
     def lifespan(self, func: Callable) -> Callable:
         """
-                Register a lifespan context manager for paired setup/teardown.
+        Register a lifespan context manager for paired setup/teardown.
 
-                The decorated function must be an async generator that yields once.
-                Optionally accepts the FastAPI app as a parameter.
+        The decorated function must be an async generator that yields once.
+        Optionally accepts the FastAPI app as a parameter.
 
-                Example:
+        Example:
         ```python
-                    @lifespan
-                    async def manage_redis():
-                        redis = await aioredis.from_url("redis://localhost")
-                        yield
-                        await redis.close()
+        @lifespan
+        async def manage_redis():
+            redis = await aioredis.from_url("redis://localhost")
+            yield
+            await redis.close()
 
-                    @lifespan
-                    async def manage_db(app):
-                        db = await connect(app.state.db_url)
-                        yield
-                        await db.close()
+        @lifespan
+        async def manage_db(app):
+            db = await connect(app.state.db_url)
+            yield
+            await db.close()
         ```
         """
         sig = inspect.signature(func)

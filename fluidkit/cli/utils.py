@@ -1,14 +1,15 @@
-import logging
 import re
 import sys
-
 import typer
+import logging
+from pathlib import Path
+
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 
 _COLORS = {
-    "error": typer.colors.BRIGHT_RED,
     "hmr": typer.colors.BRIGHT_BLUE,
+    "error": typer.colors.BRIGHT_RED,
     "fluid": typer.colors.BRIGHT_CYAN,
     "vite": typer.colors.BRIGHT_GREEN,
     "warn": typer.colors.BRIGHT_YELLOW,
@@ -80,16 +81,33 @@ def setup_logging() -> None:
         log.handlers = [handler]
         log.propagate = False
         if log.level == logging.NOTSET:
-            log.setLevel(logging.DEBUG)
+            log.setLevel(logging.INFO)
 
 
 # ── Node helpers ──────────────────────────────────────────────────────────────
 
+def _get_node_bin(name: str) -> str | None:
+    """Get the actual binary path from nodejs-wheel, or None."""
+    try:
+        import nodejs_wheel
+
+        bin_dir = Path(nodejs_wheel.__file__).parent / "bin"
+        if sys.platform == "win32":
+            for ext in (".cmd", ".exe", ""):
+                candidate = bin_dir / f"{name}{ext}"
+                if candidate.exists():
+                    return str(candidate)
+        else:
+            candidate = bin_dir / name
+            if candidate.exists():
+                return str(candidate)
+    except (ImportError, AttributeError):
+        pass
+    return None
+
 
 def ensure_node_modules() -> None:
     """Auto-install npm dependencies if node_modules is missing."""
-    from pathlib import Path
-
     if not Path("node_modules").exists():
         echo("fluid", "node_modules not found, running npm install...", _COLORS["warn"])
         run_node_tool("npm", ["install"])
@@ -117,20 +135,33 @@ def run_node_tool(name: str, args: list[str]) -> None:
 async def run_node_tool_async(name: str, args: list[str]):
     """
     Start an npm/npx/node command as an async subprocess.
-    Spawns via sys.executable so it works cross-platform,
-    including Windows where npm is a .cmd batch file.
+    Tries to spawn the binary directly for speed.
+    Falls back to Python subprocess for compatibility.
     """
     import asyncio
 
+    bin_path = _get_node_bin(name)
+    if bin_path:
+        if sys.platform == "win32" and bin_path.endswith(".cmd"):
+            return await asyncio.create_subprocess_exec(
+                "cmd", "/c", bin_path, *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        return await asyncio.create_subprocess_exec(
+            bin_path, *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+    # Fallback: spawn via Python
     arg_list = ", ".join(repr(a) for a in args)
     script = (
         f"import sys; import nodejs_wheel; "
         f"sys.exit(nodejs_wheel.{name}([{arg_list}], return_completed_process=True).returncode)"
     )
     return await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-c",
-        script,
+        sys.executable, "-c", script,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

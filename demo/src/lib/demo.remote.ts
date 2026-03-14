@@ -5,6 +5,7 @@ import { error, redirect } from '@sveltejs/kit';
 import { command, form, query, getRequestEvent } from '$app/server';
 import { extractFiles, getRemoteFunction, hasFiles, registerRemoteFunction } from '$fluidkit/registry';
 import { BASE_URL } from '$fluidkit/config';
+import { signRequest } from '$fluidkit/auth';
 
 export const get_posts = query(async () => {
   const { cookies: _fk_cookies } = getRequestEvent();
@@ -13,6 +14,7 @@ export const get_posts = query(async () => {
     headers: {
       'Content-Type': 'application/json',
       'Cookie': _fk_cookies.getAll().map(c => `${c.name}=${c.value}`).join('; '),
+      'X-FluidKit-Token': signRequest(),
     },
     body: JSON.stringify({}),
   });
@@ -32,6 +34,7 @@ export const like_post = command('unchecked', async (post_id: number) => {
     headers: {
       'Content-Type': 'application/json',
       'Cookie': _fk_cookies.getAll().map(c => `${c.name}=${c.value}`).join('; '),
+      'X-FluidKit-Token': signRequest(),
     },
     body: JSON.stringify({ post_id }),
   });
@@ -61,6 +64,7 @@ export const add_post = form('unchecked', async (data) => {
       headers: {
         'Content-Type': 'application/json',
         'Cookie': _fk_cookies.getAll().map(c => `${c.name}=${c.value}`).join('; '),
+        'X-FluidKit-Token': signRequest(),
       },
       body: JSON.stringify(data),
     });
