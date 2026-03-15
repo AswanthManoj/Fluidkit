@@ -1,27 +1,28 @@
-import inspect
 import json
-import logging
 import uuid
-from collections.abc import Callable
-from datetime import date, datetime
-from typing import Any, Literal, Union, get_args, get_origin
-
+import logging
+import inspect
+import types as _types
 from fastapi import Request
+from datetime import date, datetime
+from collections.abc import Callable
 from fastapi.responses import JSONResponse
+from typing import Any, Literal, Union, get_args, get_origin
 
 from fluidkit.context import set_request_event
 from fluidkit.models import (
     BaseType,
-    CommandResponse,
+    QueryResponse,  
     ContainerType,
     DecoratorType,
+    CommandResponse,
     FieldAnnotation,
     FunctionMetadata,
-    ParameterMetadata,
-    QueryResponse,
     RedirectResponse,
+    ParameterMetadata,
 )
 from fluidkit.types import Cookies, FileUpload, RequestEvent
+
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +47,6 @@ def _unwrap_optional(annotation) -> Any:
         if len(non_none) == 1:
             return non_none[0]
     return annotation
-
-
-# ── Metadata extraction ───────────────────────────────────────────────────────
 
 
 def extract_metadata(func: Callable, decorator_type: DecoratorType):
@@ -93,9 +91,6 @@ def extract_metadata(func: Callable, decorator_type: DecoratorType):
     return metadata, request_param_name, sig
 
 
-# ── Request handling ──────────────────────────────────────────────────────────
-
-
 def setup_request_context(request: Request, allow_set_cookies: bool):
     cookies = Cookies(allow_set=allow_set_cookies, request_cookies=request.cookies)
     request_event = RequestEvent(locals={}, cookies=cookies)
@@ -109,9 +104,6 @@ def inject_request_if_needed(sig, args, kwargs, request_param_name, request_even
         if request_param_name not in bound.arguments:
             kwargs[request_param_name] = request_event
     return kwargs
-
-
-# ── Form parsing ──────────────────────────────────────────────────────────────
 
 
 def _inject_file_at_path(data: dict, path: str, file) -> None:
@@ -181,9 +173,6 @@ async def parse_request_data(request: Request, sig: inspect.Signature) -> dict:
     return _coerce_params(data, sig)
 
 
-# ── Response ──────────────────────────────────────────────────────────────────
-
-
 def build_json_response(response_data: QueryResponse | CommandResponse | RedirectResponse):
     return JSONResponse(content=response_data.model_dump(by_alias=True))
 
@@ -193,9 +182,6 @@ def generate_route_path(metadata: FunctionMetadata) -> str:
     if module == "__main__":
         return f"/remote/{metadata.name}"
     return f"/remote/{module.replace('.', '/')}/{metadata.name}"
-
-
-# ── Type normalization ────────────────────────────────────────────────────────
 
 
 def normalize_types(py_type: Any) -> FieldAnnotation:
@@ -220,7 +206,7 @@ def normalize_types(py_type: Any) -> FieldAnnotation:
     args = get_args(py_type)
     origin = get_origin(py_type)
 
-    if origin is Union:
+    if origin is Union or isinstance(py_type, _types.UnionType):
         non_none = [a for a in args if a is not type(None)]
         has_none = type(None) in args
 

@@ -11,11 +11,13 @@ db = {
 
 @query
 async def get_posts():
+    """Fetch all posts."""
     return db["posts"]
 
 
 @command
 async def like_post(post_id: int):
+    """Like a post by ID."""
     for post in db["posts"]:
         if post["id"] == post_id:
             post["likes"] += 1
@@ -26,6 +28,7 @@ async def like_post(post_id: int):
 
 @form
 async def add_post(title: str, content: str):
+    """Add a new post."""
     new_post = {
         "id": len(db["posts"]) + 1,
         "title": title,

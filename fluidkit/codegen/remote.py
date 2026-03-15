@@ -2,6 +2,7 @@ import json
 import logging
 from pathlib import Path
 
+from fluidkit.codegen.jsdoc import render_jsdoc
 from fluidkit.utilities import generate_route_path
 from fluidkit.codegen.ts import GENERATED_FILE_WARNING, TSWriter, annotation_to_ts, module_to_namespace
 from fluidkit.models import ContainerType, DecoratorType, FieldAnnotation, FunctionMetadata, ParameterMetadata
@@ -42,6 +43,7 @@ def render_remote_file(functions: list[FunctionMetadata]) -> str:
 
     for fn in functions:
         w.blank()
+        render_jsdoc(w, fn)
         if fn.decorator_type == DecoratorType.QUERY:
             _render_query(w, fn)
         elif fn.decorator_type == DecoratorType.QUERY_BATCH:
@@ -192,6 +194,7 @@ def _render_form_fetch(w: TSWriter, route: str) -> None:
         w.line("method: 'POST',")
         with w.block("headers: {", "},"):
             w.line("'Cookie': _fk_cookies.getAll().map(c => `${c.name}=${c.value}`).join('; '),")
+            w.line("'X-FluidKit-Token': signRequest(),")
         w.line("body: _fk_form,")
     w.dedent()
     w.line("}")
