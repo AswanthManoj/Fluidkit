@@ -86,6 +86,9 @@ class _FluidKitAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if not request.url.path.startswith("/remote/"):
             return await call_next(request)
+        
+        if not fluidkit_registry.signed:
+            return await call_next(request)
 
         token = request.headers.get("X-FluidKit-Token")
         if not token:
@@ -126,6 +129,7 @@ class FluidKitRegistry:
         if self._initialized:
             return
         self.dev = False
+        self.signed = True
         self._initialized = True
         self._lifespan_hooks: list[tuple] = []
         self._startup_hooks: list[Callable] = []
@@ -140,11 +144,11 @@ class FluidKitRegistry:
 
         @asynccontextmanager
         async def master_lifespan(app):
-            if not os.environ.get("FLUIDKIT_SECRET"):
+            if registry.signed and not os.environ.get("FLUIDKIT_SECRET"):
                 logger.warning(
                     "FLUIDKIT_SECRET is not set. "
                     "Remote function routes will reject all requests. "
-                    "Set this environment variable to the same value in both FastAPI and SvelteKit."
+                    "Set this environment variable to the same value in both FastAPI and SvelteKit or set `signed` in fluidkit.config.json to be `false`"
                 )
 
             for fn in registry._startup_hooks:

@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+
 DEFAULT_CONFIG = {
     "entry": "src/app.py",
     "host": "0.0.0.0",
@@ -8,6 +9,7 @@ DEFAULT_CONFIG = {
     "frontend_port": 5173,
     "schema_output": "src/lib/fluidkit",
     "watch_pattern": "src/**/*.py",
+    "secure": True,
 }
 
 

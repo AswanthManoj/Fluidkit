@@ -7,6 +7,24 @@ import { extractFiles, getRemoteFunction, hasFiles, registerRemoteFunction } fro
 import { BASE_URL } from '$fluidkit/config';
 import { signRequest } from '$fluidkit/auth';
 
+/**
+ * Fetch all posts.
+ *
+ * ---
+ * @see [`src/lib/demo.py` . `@query`](./demo.py)
+ * @see [Fluidkit Docs #query](https://fluidkit.github.io/docs/query)
+ *
+ * ---
+ *
+ * @example
+ * ```svelte
+ * <script>
+ *   import { get_posts } from '$lib/demo.remote';
+ * </script>
+ *
+ * {await get_posts()}
+ * ```
+ */
 export const get_posts = query(async () => {
   const { cookies: _fk_cookies } = getRequestEvent();
   const _fk_res = await fetch(`${BASE_URL}/remote/src/lib/demo/get_posts`, {
@@ -27,6 +45,26 @@ export const get_posts = query(async () => {
   return _fk_body.result as any;
 });
 
+/**
+ * Like a post by ID.
+ *
+ * ---
+ * @see [`src/lib/demo.py` . `@command`](./demo.py)
+ * @see [Fluidkit Docs #command](https://fluidkit.github.io/docs/command)
+ *
+ * ---
+ *
+ * @example
+ * ```svelte
+ * <script>
+ *   import { like_post } from '$lib/demo.remote';
+ * </script>
+ *
+ * <button onclick={async () => await like_post(post_id)}>
+ *   Like Post
+ * </button>
+ * ```
+ */
 export const like_post = command('unchecked', async (post_id: number) => {
   const { cookies: _fk_cookies } = getRequestEvent();
   const _fk_res = await fetch(`${BASE_URL}/remote/src/lib/demo/like_post`, {
@@ -54,6 +92,28 @@ export const like_post = command('unchecked', async (post_id: number) => {
   return _fk_body.result as any;
 });
 
+/**
+ * Add a new post.
+ *
+ * ---
+ * @see [`src/lib/demo.py` . `@form`](./demo.py)
+ * @see [Fluidkit Docs #form](https://fluidkit.github.io/docs/form)
+ *
+ * ---
+ *
+ * @example
+ * ```svelte
+ * <script>
+ *   import { add_post } from '$lib/demo.remote';
+ * </script>
+ *
+ * <form {...add_post}>
+ *   <input {...add_post.fields.title.as('text')} />
+ *   <input {...add_post.fields.content.as('text')} />
+ *   <button>Submit</button>
+ * </form>
+ * ```
+ */
 export const add_post = form('unchecked', async (data) => {
   const { cookies: _fk_cookies } = getRequestEvent();
 
@@ -79,6 +139,7 @@ export const add_post = form('unchecked', async (data) => {
       method: 'POST',
       headers: {
         'Cookie': _fk_cookies.getAll().map(c => `${c.name}=${c.value}`).join('; '),
+        'X-FluidKit-Token': signRequest(),
       },
       body: _fk_form,
     });

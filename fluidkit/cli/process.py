@@ -9,8 +9,16 @@ from contextlib import contextmanager
 
 from fluidkit import __version__
 from fluidkit.registry import fluidkit_registry
-
 from .utils import _COLORS, display_host, echo, header, hmr_update, run_node_tool, run_node_tool_async, setup_logging
+
+
+
+def _setup_env(config: dict) -> None:
+    import secrets
+    signed = config.get("signed", True)
+    fluidkit_registry.signed = signed
+    if signed:
+        os.environ.setdefault("FLUIDKIT_SECRET", secrets.token_urlsafe(32))
 
 
 @contextmanager
@@ -57,13 +65,12 @@ async def _stream(stream, prefix: str, color):
 
 
 async def _run_servers(config: dict, npm_command: str, hmr: bool = True) -> None:
-    import secrets
     from fluidkit.codegen import generate
     from fluidkit.explorer import mount, notify_change
     from fluidkit.codegen import watch as codegen_watch
     from fluidkit.cli.scaffold import copy_runtime_files
 
-    os.environ.setdefault("FLUIDKIT_SECRET", secrets.token_urlsafe(32))
+    _setup_env(config)
 
     load_entry(config["entry"])
     fluidkit_registry.dev = True
@@ -74,12 +81,11 @@ async def _run_servers(config: dict, npm_command: str, hmr: bool = True) -> None
     base_url = f"http://{display_host(config)}:{config['backend_port']}"
 
     copy_runtime_files(schema_output=config["schema_output"])
-    generate(fluidkit_registry.functions, base_url=base_url, schema_output=config["schema_output"])
+    generate(fluidkit_registry.functions, base_url=base_url, schema_output=config["schema_output"], signed=config.get("signed", True))
     codegen_watch(fluidkit_registry, base_url=base_url, schema_output=config["schema_output"])
 
     if hmr:
         import jurigged
-
         from fluidkit import hmr as hmr_module
 
         watcher = jurigged.watch(logger=hmr_update, pattern=config["watch_pattern"])
@@ -94,7 +100,6 @@ async def _run_servers(config: dict, npm_command: str, hmr: bool = True) -> None
 
     setup_logging()
 
-    # Start vite first — it doesn't need the backend during startup
     proc = await run_node_tool_async("npm", ["run", npm_command])
 
     with _uvicorn_server(
@@ -149,11 +154,10 @@ def run_preview(config: dict) -> None:
 
 
 def run_build(config: dict) -> None:
-    import secrets
     from fluidkit.codegen import generate
     from fluidkit.cli.scaffold import copy_runtime_files
 
-    os.environ.setdefault("FLUIDKIT_SECRET", secrets.token_urlsafe(32))
+    _setup_env(config)
 
     load_entry(config["entry"])
 
@@ -164,6 +168,7 @@ def run_build(config: dict) -> None:
         functions=fluidkit_registry.functions,
         base_url=base_url,
         schema_output=config["schema_output"],
+        signed=config.get("signed", True)
     )
     echo("fluid", "codegen done")
 

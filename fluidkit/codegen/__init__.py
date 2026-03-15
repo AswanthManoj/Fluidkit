@@ -74,7 +74,7 @@ def _run_codegen(metadata: FunctionMetadata, registry, base_url: str, schema_out
             remote_ts = Path(metadata.file_path.replace(".py", ".remote.ts"))
             remote_ts.unlink(missing_ok=True)
         else:
-            generate_remote_files(functions_for_file)
+            generate_remote_files(functions_for_file, signed=registry.signed)
 
     if _has_custom_types(metadata):
         schema_ts = build_schema_ts(list(registry.functions.values()))
@@ -94,6 +94,7 @@ def generate(
     functions: dict[str, FunctionMetadata],
     base_url: str = "http://localhost:8000",
     schema_output: str = "src/lib/fluidkit",
+    signed: bool = True,
 ) -> None:
     """
     Generate all FluidKit artifacts:
@@ -103,7 +104,7 @@ def generate(
     """
     _write_config_ts(base_url, schema_output)
 
-    generate_remote_files(functions)
+    generate_remote_files(functions, signed=signed)
 
     schema_ts = build_schema_ts(list(functions.values()))
     schema_path = Path(schema_output) / "schema.ts"

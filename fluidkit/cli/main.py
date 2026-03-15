@@ -1,10 +1,11 @@
 import typer
 
 from .config import load_config
-from .patch import check_svelte_experimental, patch_svelte_config, patch_vite_config
-from .process import run_build, run_dev, run_preview
 from .scaffold import scaffold_project
+from .process import run_build, run_dev, run_preview
 from .utils import ensure_node_modules, run_node_tool
+from .patch import check_svelte_experimental, patch_svelte_config, patch_vite_config
+
 
 app = typer.Typer(help="FluidKit CLI")
 
