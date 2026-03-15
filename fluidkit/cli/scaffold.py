@@ -1,10 +1,10 @@
 import sys
 import shutil
 from pathlib import Path
-
-from .utils import _COLORS, echo, get_node_tool
 from .config import load_config, write_default_config
+from .utils import _COLORS, echo, run_node_tool_checked
 from .patch import patch_svelte_config, patch_svelte_experimental, patch_vite_config
+
 
 
 def copy_runtime_files(schema_output: str = "src/lib/fluidkit") -> None:
@@ -52,21 +52,15 @@ def scaffold_project(folder: str = None):
         project_dir = Path(folder)
         project_dir.mkdir(parents=True, exist_ok=True)
         import os
-
         os.chdir(project_dir)
 
-    npx = get_node_tool("npx")
-    npm = get_node_tool("npm")
-
-    result = npx(
-        ["sv", "create", ".", "--no-dir-check", "--no-install", "--template", "minimal"], return_completed_process=True
-    )
+    result = run_node_tool_checked("npx", ["sv", "create", ".", "--no-dir-check", "--no-install", "--template", "minimal"])
     if result.returncode != 0:
         echo("fluidkit", "sv create failed.", _COLORS["error"])
         sys.exit(result.returncode)
 
     echo("fluidkit", "installing dependencies...")
-    result = npm(["install"], return_completed_process=True)
+    result = run_node_tool_checked("npm", ["install"])
     if result.returncode != 0:
         echo("fluidkit", "npm install failed.", _COLORS["error"])
         sys.exit(result.returncode)

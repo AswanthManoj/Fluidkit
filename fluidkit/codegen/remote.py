@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 def generate_remote_files(
     functions: dict[str, FunctionMetadata],
+    signed: bool = True,
 ) -> None:
     by_file: dict[str, list[FunctionMetadata]] = {}
     for fn in functions.values():
@@ -20,7 +21,7 @@ def generate_remote_files(
             by_file.setdefault(fn.file_path, []).append(fn)
 
     for file_path, fns in by_file.items():
-        content = render_remote_file(fns)
+        content = render_remote_file(fns, signed=signed)
         if not content:
             continue
         out_path = file_path.replace(".py", ".remote.ts")
@@ -28,7 +29,7 @@ def generate_remote_files(
         logger.debug("generated %s", out_path)
 
 
-def render_remote_file(functions: list[FunctionMetadata]) -> str:
+def render_remote_file(functions: list[FunctionMetadata], signed: bool = True) -> str:
     if not functions:
         return ""
 
@@ -39,21 +40,21 @@ def render_remote_file(functions: list[FunctionMetadata]) -> str:
 
     w = TSWriter()
     w.line(GENERATED_FILE_WARNING)
-    _render_imports(w, types, has_mutations, has_registrations, custom_types)
+    _render_imports(w, types, has_mutations, has_registrations, custom_types, signed=signed)
 
     for fn in functions:
         w.blank()
         render_jsdoc(w, fn)
         if fn.decorator_type == DecoratorType.QUERY:
-            _render_query(w, fn)
+            _render_query(w, fn, signed=signed)
         elif fn.decorator_type == DecoratorType.QUERY_BATCH:
-            _render_query_batch(w, fn)
+            _render_query_batch(w, fn, signed=signed)
         elif fn.decorator_type == DecoratorType.PRERENDER:
-            _render_prerender(w, fn)
+            _render_prerender(w, fn, signed=signed)
         elif fn.decorator_type == DecoratorType.FORM:
-            _render_form(w, fn)
+            _render_form(w, fn, signed=signed)
         elif fn.decorator_type == DecoratorType.COMMAND:
-            _render_command(w, fn)
+            _render_command(w, fn, signed=signed)
 
     if has_registrations:
         w.blank()
@@ -87,6 +88,7 @@ def _render_imports(
     has_mutations: bool,
     has_registrations: bool,
     custom_types: dict[str, str],
+    signed: bool = True,
 ) -> None:
     has_forms = bool(types & {DecoratorType.FORM})
     kit_imports = ["error"]
@@ -115,7 +117,8 @@ def _render_imports(
         w.line(f"import {{ {', '.join(sorted(registry_imports))} }} from '$fluidkit/registry';")
 
     w.line("import { BASE_URL } from '$fluidkit/config';")
-    w.line("import { signRequest } from '$fluidkit/auth';")
+    if signed:
+        w.line("import { signRequest } from '$fluidkit/auth';")
 
     if custom_types:
         by_namespace: dict[str, list[str]] = {}
@@ -140,9 +143,6 @@ def _ts_body(parameters: list[ParameterMetadata]) -> str:
     return f"JSON.stringify({{ {', '.join(p.name for p in parameters)} }})"
 
 
-# ── Shared helpers ────────────────────────────────────────────────────────
-
-
 def _build_signature(fn: FunctionMetadata, kind: str, *, param_style: str = "typed") -> str:
     if not fn.parameters:
         return f"export const {fn.name} = {kind}(async () => {{"
@@ -161,17 +161,18 @@ def _build_signature(fn: FunctionMetadata, kind: str, *, param_style: str = "typ
     )
 
 
-def _render_fetch(w: TSWriter, route: str, params: list[ParameterMetadata]) -> None:
+def _render_fetch(w: TSWriter, route: str, params: list[ParameterMetadata], signed: bool = True) -> None:
     with w.block(f"const _fk_res = await fetch(`${{BASE_URL}}{route}`, {{", "});"):
         w.line("method: 'POST',")
         with w.block("headers: {", "},"):
             w.line("'Content-Type': 'application/json',")
             w.line("'Cookie': _fk_cookies.getAll().map(c => `${c.name}=${c.value}`).join('; '),")
-            w.line("'X-FluidKit-Token': signRequest(),")
+            if signed:
+                w.line("'X-FluidKit-Token': signRequest(),")
         w.line(f"body: {_ts_body(params)},")
 
 
-def _render_form_fetch(w: TSWriter, route: str) -> None:
+def _render_form_fetch(w: TSWriter, route: str, signed: bool = True) -> None:
     w.line("let _fk_res: Response;")
     w.line("if (!hasFiles(data)) {")
     w.indent()
@@ -180,7 +181,8 @@ def _render_form_fetch(w: TSWriter, route: str) -> None:
         with w.block("headers: {", "},"):
             w.line("'Content-Type': 'application/json',")
             w.line("'Cookie': _fk_cookies.getAll().map(c => `${c.name}=${c.value}`).join('; '),")
-            w.line("'X-FluidKit-Token': signRequest(),")
+            if signed:
+                w.line("'X-FluidKit-Token': signRequest(),")
         w.line("body: JSON.stringify(data),")
     w.dedent()
     w.line("} else {")
@@ -194,7 +196,8 @@ def _render_form_fetch(w: TSWriter, route: str) -> None:
         w.line("method: 'POST',")
         with w.block("headers: {", "},"):
             w.line("'Cookie': _fk_cookies.getAll().map(c => `${c.name}=${c.value}`).join('; '),")
-            w.line("'X-FluidKit-Token': signRequest(),")
+            if signed:
+                w.line("'X-FluidKit-Token': signRequest(),")
         w.line("body: _fk_form,")
     w.dedent()
     w.line("}")
@@ -220,21 +223,18 @@ def _render_mutations_block(w: TSWriter) -> None:
         w.line("if (_fk_fn) _fk_fn(_fk_args, _fk_data);")
 
 
-# ── Renderers ────────────────────────────────────────────────────────
-
-
-def _render_query(w: TSWriter, fn: FunctionMetadata) -> None:
+def _render_query(w: TSWriter, fn: FunctionMetadata, signed: bool = True) -> None:
     route = generate_route_path(fn)
     return_type = annotation_to_ts(fn.return_annotation)
     with w.block(_build_signature(fn, "query"), "});"):
         w.line("const { cookies: _fk_cookies } = getRequestEvent();")
-        _render_fetch(w, route, fn.parameters)
+        _render_fetch(w, route, fn.parameters, signed=signed)
         _render_error_block(w)
         w.line("const _fk_body = await _fk_res.json();")
         w.line(f"return _fk_body.result as {return_type};")
 
 
-def _render_query_batch(w: TSWriter, fn: FunctionMetadata) -> None:
+def _render_query_batch(w: TSWriter, fn: FunctionMetadata, signed: bool = True) -> None:
     route = generate_route_path(fn)
 
     if not fn.parameters:
@@ -255,19 +255,20 @@ def _render_query_batch(w: TSWriter, fn: FunctionMetadata) -> None:
             with w.block("headers: {", "},"):
                 w.line("'Content-Type': 'application/json',")
                 w.line("'Cookie': _fk_cookies.getAll().map(c => `${c.name}=${c.value}`).join('; '),")
-                w.line("'X-FluidKit-Token': signRequest(),")
+                if signed:
+                    w.line("'X-FluidKit-Token': signRequest(),")
             w.line(f"body: JSON.stringify({{ args: {param.name} }}),")
         _render_error_block(w)
         w.line("const _fk_body = await _fk_res.json();")
         w.line(f"return (_fk_input: {inner_type}, _fk_idx: number) => _fk_body.results[_fk_idx];")
 
 
-def _render_command(w: TSWriter, fn: FunctionMetadata) -> None:
+def _render_command(w: TSWriter, fn: FunctionMetadata, signed: bool = True) -> None:
     route = generate_route_path(fn)
     return_type = annotation_to_ts(fn.return_annotation)
     with w.block(_build_signature(fn, "command"), "});"):
         w.line("const { cookies: _fk_cookies } = getRequestEvent();")
-        _render_fetch(w, route, fn.parameters)
+        _render_fetch(w, route, fn.parameters, signed=signed)
         _render_error_block(w)
         w.line("const _fk_body = await _fk_res.json();")
         _render_cookie_forward_block(w)
@@ -275,12 +276,12 @@ def _render_command(w: TSWriter, fn: FunctionMetadata) -> None:
         w.line(f"return _fk_body.result as {return_type};")
 
 
-def _render_form(w: TSWriter, fn: FunctionMetadata) -> None:
+def _render_form(w: TSWriter, fn: FunctionMetadata, signed: bool = True) -> None:
     return_type = annotation_to_ts(fn.return_annotation)
     with w.block(_build_signature(fn, "form", param_style="data"), "});"):
         w.line("const { cookies: _fk_cookies } = getRequestEvent();")
         w.blank()
-        _render_form_fetch(w, generate_route_path(fn))
+        _render_form_fetch(w, generate_route_path(fn), signed=signed)
         w.blank()
         _render_error_block(w)
         w.line("const _fk_body = await _fk_res.json();")
@@ -290,7 +291,7 @@ def _render_form(w: TSWriter, fn: FunctionMetadata) -> None:
         w.line(f"return _fk_body.result as {return_type};")
 
 
-def _render_prerender(w: TSWriter, fn: FunctionMetadata) -> None:
+def _render_prerender(w: TSWriter, fn: FunctionMetadata, signed: bool = True) -> None:
     route = generate_route_path(fn)
     return_type = annotation_to_ts(fn.return_annotation)
     signature = _build_signature(fn, "prerender", param_style="flat")
@@ -299,7 +300,7 @@ def _render_prerender(w: TSWriter, fn: FunctionMetadata) -> None:
 
     def _body():
         w.line("const { cookies: _fk_cookies } = getRequestEvent();")
-        _render_fetch(w, route, fn.parameters)
+        _render_fetch(w, route, fn.parameters, signed=signed)
         _render_error_block(w)
         w.line("const _fk_body = await _fk_res.json();")
         w.line(f"return _fk_body.result as {return_type};")

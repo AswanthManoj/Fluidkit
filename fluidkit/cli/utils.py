@@ -5,7 +5,6 @@ import logging
 from pathlib import Path
 
 
-# ── Colors ────────────────────────────────────────────────────────────────────
 
 _COLORS = {
     "hmr": typer.colors.BRIGHT_BLUE,
@@ -14,9 +13,6 @@ _COLORS = {
     "vite": typer.colors.BRIGHT_GREEN,
     "warn": typer.colors.BRIGHT_YELLOW,
 }
-
-
-# ── Single output authority ───────────────────────────────────────────────────
 
 
 def echo(prefix: str, line: str, color: str = None) -> None:
@@ -35,7 +31,6 @@ def hmr_update(op: str) -> None:
     if op_str.startswith("Watch"):
         return
 
-    # Skip third-party module noise (websockets, uvicorn, etc.)
     parts = op_str.split()
     if len(parts) >= 2:
         module_root = parts[1].split(".")[0]
@@ -54,9 +49,6 @@ def hmr_update(op: str) -> None:
     typer.echo(
         typer.style("  [fluid] ", fg=_COLORS["fluid"], bold=True) + typer.style("hmr update", fg=color) + f" {op}"
     )
-
-
-# ── Logging ───────────────────────────────────────────────────────────────────
 
 
 class _FluidKitLogHandler(logging.Handler):
@@ -84,8 +76,6 @@ def setup_logging() -> None:
             log.setLevel(logging.INFO)
 
 
-# ── Node helpers ──────────────────────────────────────────────────────────────
-
 def _get_node_bin(name: str) -> str | None:
     """Get the actual binary path from nodejs-wheel, or None."""
     try:
@@ -106,6 +96,29 @@ def _get_node_bin(name: str) -> str | None:
     return None
 
 
+def _get_node_tool(name: str):
+    """Get a nodejs-wheel tool callable or exit with install instructions."""
+    try:
+        import nodejs_wheel
+        return getattr(nodejs_wheel, name)
+    except ImportError:
+        echo("fluid", "nodejs-wheel is not installed. Run: pip install nodejs-wheel", _COLORS["error"])
+        sys.exit(1)
+
+
+def _run_node_tool_raw(name: str, args: list[str]):
+    """Spawn a node tool directly via binary, falling back to nodejs-wheel. Returns CompletedProcess."""
+    import subprocess
+
+    bin_path = _get_node_bin(name)
+    if bin_path:
+        if sys.platform == "win32" and bin_path.endswith(".cmd"):
+            return subprocess.run(["cmd", "/c", bin_path, *args])
+        return subprocess.run([bin_path, *args])
+
+    return _get_node_tool(name)(args, return_completed_process=True)
+
+
 def ensure_node_modules() -> None:
     """Auto-install npm dependencies if node_modules is missing."""
     if not Path("node_modules").exists():
@@ -113,28 +126,21 @@ def ensure_node_modules() -> None:
         run_node_tool("npm", ["install"])
 
 
-def get_node_tool(name: str):
-    """Get a nodejs-wheel tool callable (npm, npx, node) or exit with install instructions."""
-    try:
-        import nodejs_wheel
-
-        return getattr(nodejs_wheel, name)
-    except ImportError:
-        echo("fluid", "nodejs-wheel is not installed. Run: pip install nodejs-wheel", _COLORS["error"])
-        sys.exit(1)
-
-
 def run_node_tool(name: str, args: list[str]) -> None:
-    """Run an npm/npx/node command via nodejs-wheel, forwarding exit code."""
-    tool = get_node_tool(name)
-    result = tool(args, return_completed_process=True)
+    """Run a node tool, raising SystemExit on non-zero exit code."""
+    result = _run_node_tool_raw(name, args)
     if result.returncode != 0:
         raise SystemExit(result.returncode)
 
 
+def run_node_tool_checked(name: str, args: list[str]):
+    """Run a node tool and return CompletedProcess. Caller handles the exit code."""
+    return _run_node_tool_raw(name, args)
+
+
 async def run_node_tool_async(name: str, args: list[str]):
     """
-    Start an npm/npx/node command as an async subprocess.
+    Start a node tool as an async subprocess.
     Tries to spawn the binary directly for speed.
     Falls back to Python subprocess for compatibility.
     """
@@ -154,7 +160,6 @@ async def run_node_tool_async(name: str, args: list[str]):
             stderr=asyncio.subprocess.PIPE,
         )
 
-    # Fallback: spawn via Python
     arg_list = ", ".join(repr(a) for a in args)
     script = (
         f"import sys; import nodejs_wheel; "

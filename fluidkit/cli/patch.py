@@ -4,15 +4,15 @@ from pathlib import Path
 
 from .utils import _COLORS, echo
 
+
+
 _VITE_CONFIGS = ("vite.config.ts", "vite.config.js")
 _SVELTE_CONFIGS = ("svelte.config.js", "svelte.config.ts")
-
 
 _EXPERIMENTAL_MERGE = {
     "kit": {"experimental": {"remoteFunctions": True}},
     "compilerOptions": {"experimental": {"async": True}},
 }
-
 
 _PATCH_SCRIPT = """\
 import fs from "fs";
