@@ -3,11 +3,12 @@ import logging
 import inspect
 import concurrent.futures
 from functools import update_wrapper
-from typing import overload, ParamSpec, TypeVar
 from collections.abc import Awaitable, Callable
+from typing import overload, ParamSpec, TypeVar, Dict
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
+from pydantic import TypeAdapter, ValidationError
 
 from fluidkit.context import (
     set_context,
@@ -25,7 +26,6 @@ from fluidkit.models import (
     create_batch_query_response,
 )
 from fluidkit.registry import fluidkit_registry
-from fluidkit.types import RemoteProxy, AsyncRemoteProxy
 from fluidkit.utilities import (
     extract_metadata,
     parse_request_data,
@@ -33,6 +33,8 @@ from fluidkit.utilities import (
     setup_request_context,
     inject_request_if_needed,
 )
+from fluidkit.types import RemoteProxy, AsyncRemoteProxy, FileUpload, RequestEvent
+
 
 T = TypeVar("T")
 P = ParamSpec("P")
@@ -67,17 +69,38 @@ def _http_error_response(e: HTTPError) -> JSONResponse:
     )
 
 
+def _validation_error_response(e: ValidationError, func_name: str, module: str) -> JSONResponse:
+    errors = e.errors()
+    if errors:
+        first = errors[0]
+        loc = first.get("loc", ())
+        field = loc[-1] if loc else "input"
+        msg = first.get("msg", "invalid value")
+    else:
+        field = "input"
+        msg = "invalid value"
+    message = f"Validation error in {module}.{func_name}(): {field} - {msg}"
+    if fluidkit_registry.dev:
+        logger.warning(message)
+    return _error_response(e, status=400, message=message)
+
+
+def _type_error_response(e: TypeError, func_name: str, module: str) -> JSONResponse:
+    message = f"Invalid arguments for {module}.{func_name}(): {e}"
+    if fluidkit_registry.dev:
+        logger.warning(message)
+    return _error_response(e, status=400, message=message)
+
+
 def _wrap_and_register(func, metadata, sig):
     """Create the RemoteProxy or AsyncRemoteProxy wrapper. Shared by all decorators."""
     proxy_cls = AsyncRemoteProxy if inspect.iscoroutinefunction(func) else RemoteProxy
-
     def wrapper(*args, **kwargs):
         return proxy_cls(
             sig=sig, args=args,
             kwargs=kwargs, executor=func,
             func_name=f"{metadata.module}#{metadata.name}",
         )
-    
     update_wrapper(wrapper, func)
     return wrapper
 
@@ -104,6 +127,16 @@ def _make_remote(
     """
     metadata, request_param_name, sig = extract_metadata(func=func, decorator_type=decorator_type)
 
+    _validators: Dict[str: TypeAdapter] = {}
+    for param_name, param in sig.parameters.items():
+        if param.annotation is inspect.Parameter.empty:
+            continue
+        if param.annotation is RequestEvent:
+            continue
+        if param.annotation is FileUpload:
+            continue
+        _validators[param_name] = TypeAdapter(param.annotation)
+
     async def fastapi_handler(request: Request):
         request_event, cookies, request_event_token = setup_request_context(
             request=request, allow_set_cookies=allow_set_cookies
@@ -125,6 +158,13 @@ def _make_remote(
                 request_event=request_event,
                 request_param_name=request_param_name,
             )
+
+            for param_name, adapter in _validators.items():
+                if param_name in kwargs:
+                    kwargs[param_name] = adapter.validate_python(kwargs[param_name])
+
+            valid_params = set(sig.parameters.keys())
+            kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
 
             if inspect.iscoroutinefunction(func):
                 result = await func(**kwargs)
@@ -155,6 +195,12 @@ def _make_remote(
         except HTTPError as e:
             return _http_error_response(e)
 
+        except ValidationError as e:
+            return _validation_error_response(e, func.__name__, metadata.module)
+
+        except TypeError as e:
+            return _type_error_response(e, func.__name__, metadata.module)
+        
         except ValueError as e:
             if catch_value_error:
                 return _error_response(

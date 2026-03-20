@@ -41,14 +41,6 @@ _SCALARS = {
 }
 
 
-def _unwrap_optional(annotation) -> Any:
-    if get_origin(annotation) is Union:
-        non_none = [a for a in get_args(annotation) if a is not type(None)]
-        if len(non_none) == 1:
-            return non_none[0]
-    return annotation
-
-
 def extract_metadata(func: Callable, decorator_type: DecoratorType):
     sig = inspect.signature(func)
 
@@ -133,44 +125,22 @@ def _inject_file_at_path(data: dict, path: str, file) -> None:
     target[parts[-1]] = file
 
 
-def _coerce_params(data: dict, sig: inspect.Signature) -> dict:
-    from pydantic import BaseModel
-
-    for param_name, param in sig.parameters.items():
-        if param.annotation is RequestEvent or param_name not in data:
-            continue
-
-        value = data[param_name]
-        unwrapped = _unwrap_optional(param.annotation)
-        origin = get_origin(unwrapped)
-
-        if isinstance(unwrapped, type) and issubclass(unwrapped, BaseModel) and isinstance(value, dict):
-            data[param_name] = unwrapped(**value)
-
-        elif origin is list and isinstance(value, list):
-            inner_args = get_args(unwrapped)
-            if inner_args and isinstance(inner_args[0], type) and issubclass(inner_args[0], BaseModel):
-                data[param_name] = [inner_args[0](**v) if isinstance(v, dict) else v for v in value]
-
-    return data
-
-
 async def parse_request_data(request: Request, sig: inspect.Signature) -> dict:
     content_type = request.headers.get("content-type", "")
 
     if "multipart/form-data" not in content_type and "application/x-www-form-urlencoded" not in content_type:
-        return _coerce_params(await request.json(), sig)
+        return await request.json()
 
     form = await request.form()
     raw_data = form.get("__fluidkit_data")
     if raw_data is None:
-        return _coerce_params(await request.json(), sig)
+        return await request.json()
 
     data = json.loads(raw_data)
     for key in form:
         if key != "__fluidkit_data":
             _inject_file_at_path(data, key, form[key])
-    return _coerce_params(data, sig)
+    return data
 
 
 def build_json_response(response_data: QueryResponse | CommandResponse | RedirectResponse):

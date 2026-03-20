@@ -56,6 +56,8 @@ class _FluidKitLogHandler(logging.Handler):
         msg = self.format(record)
         if re.search(r'" 2\d{2}', msg):
             return
+        if "/remote/" in msg and re.search(r'" [345]\d{2}', msg):
+            return
         if record.levelno >= logging.ERROR:
             echo("fluid", msg, _COLORS["error"])
         elif record.levelno >= logging.WARNING:
@@ -68,7 +70,7 @@ def setup_logging() -> None:
     fmt = logging.Formatter("%(message)s")
     handler = _FluidKitLogHandler()
     handler.setFormatter(fmt)
-    for name in ("uvicorn", "uvicorn.access", "uvicorn.error", "jurigged"):
+    for name in ("uvicorn", "uvicorn.access", "uvicorn.error", "jurigged", "fluidkit"):
         log = logging.getLogger(name)
         log.handlers = [handler]
         log.propagate = False
