@@ -111,6 +111,19 @@ async def _run_servers(config: dict, npm_command: str, hmr: bool = True) -> None
         host = display_host(config)
         header_shown = False
 
+        async def _warmup(host: str, port: int, timeout: float = 5.0) -> None:
+            try:
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection(host, port),
+                    timeout=timeout,
+                )
+                writer.write(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
+                await asyncio.wait_for(reader.read(1024), timeout=timeout)
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
+
         async def _stream_stdout(stream):
             nonlocal header_shown
             async for line in stream:
@@ -119,6 +132,8 @@ async def _run_servers(config: dict, npm_command: str, hmr: bool = True) -> None
                     continue
                 if not header_shown and "ready in" in text:
                     header_shown = True
+                    echo("fluid", "warming up vite for first visit...", _COLORS["fluid"])
+                    await _warmup("localhost", config['frontend_port'])
                     header(
                         version=__version__,
                         fluid_url=f"http://{host}:{config['backend_port']}",

@@ -9,7 +9,7 @@ DEFAULT_CONFIG = {
     "frontend_port": 5173,
     "schema_output": "src/lib/fluidkit",
     "watch_pattern": "src/**/*.py",
-    "secure": True,
+    "signed": True,
 }
 
 
