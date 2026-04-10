@@ -28,6 +28,7 @@ def copy_template_files() -> None:
     mapping = {
         "app.py": "src/app.py",
         "demo.py": "src/lib/demo.py",
+        "schema.ts": "src/lib/fluidkit/schema.ts",
         "+page.svelte": "src/routes/+page.svelte",
         "+layout.svelte": "src/routes/+layout.svelte",
         "demo.remote.ts": "src/lib/demo.remote.ts",
@@ -65,6 +66,10 @@ def scaffold_project(folder: str = None):
         echo("fluidkit", "npm install failed.", _COLORS["error"])
         sys.exit(result.returncode)
 
+    result = run_node_tool_checked("npm", ["install", "undici"])
+    if result.returncode != 0:
+        echo("fluidkit", "⚠ could not install undici", _COLORS["warn"])
+
     write_default_config()
     write_gitignore()
     config = load_config()
@@ -96,5 +101,12 @@ def scaffold_project(folder: str = None):
     else:
         echo("fluidkit", "⚠ could not patch vite.config — add this manually:", _COLORS["warn"])
         echo("fluidkit", f"    server: {{ port: {config['frontend_port']} }}")
+
+    # ok = patch_app_dts()
+    # if ok:
+    #     echo("fluidkit", "patched src/app.d.ts")
+    # else:
+    #     echo("fluidkit", "⚠ could not patch src/app.d.ts — add this manually:", _COLORS["warn"])
+    #     echo("fluidkit", f"    interface Locals {{ {_FK_LOCALS_PROP} }}")
 
     echo("fluidkit", "done! run: `fluidkit dev`")

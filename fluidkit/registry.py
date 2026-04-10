@@ -8,9 +8,9 @@ import linecache
 from fastapi import FastAPI
 from collections.abc import Callable
 from starlette.requests import Request
+from contextlib import asynccontextmanager
 from starlette.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
-from contextlib import AsyncExitStack, asynccontextmanager
 
 from fluidkit.models import FunctionMetadata
 from fluidkit.utilities import generate_route_path
@@ -84,7 +84,8 @@ class _FluidKitAuthMiddleware(BaseHTTPMiddleware):
     WINDOW = 5
 
     async def dispatch(self, request: Request, call_next):
-        if not request.url.path.startswith("/remote/"):
+        protected = request.url.path.startswith("/remote/") or request.url.path == "/__fk_hooks__"
+        if not protected:
             return await call_next(request)
         
         if not fluidkit_registry.signed:
@@ -131,9 +132,6 @@ class FluidKitRegistry:
         self.dev = False
         self.signed = True
         self._initialized = True
-        self._lifespan_hooks: list[tuple] = []
-        self._startup_hooks: list[Callable] = []
-        self._shutdown_hooks: list[Callable] = []
         self._route_handlers: dict[str, Callable] = {}
         self.functions: dict[str, FunctionMetadata] = {}
         self._on_change_callbacks: list[Callable[[dict], None]] = []
@@ -144,32 +142,93 @@ class FluidKitRegistry:
 
         @asynccontextmanager
         async def master_lifespan(app):
+            from fluidkit.hooks import hooks
+
             if registry.signed and not os.environ.get("FLUIDKIT_SECRET"):
                 logger.warning(
                     "FLUIDKIT_SECRET is not set. "
                     "Remote function routes will reject all requests. "
-                    "Set this environment variable to the same value in both FastAPI and SvelteKit or set `signed` in fluidkit.config.json to be `false`"
+                    "Set this environment variable to the same value in both "
+                    "FastAPI and SvelteKit or set `signed` in fluidkit.config.json "
+                    "to be `false`"
                 )
 
-            for fn in registry._startup_hooks:
-                await _invoke(fn)
+            if hooks._init_hook is not None:
+                await _invoke(hooks._init_hook.func)
 
-            async with AsyncExitStack() as stack:
-                for cm, has_app_param in registry._lifespan_hooks:
-                    if has_app_param:
-                        await stack.enter_async_context(cm(app))
-                    else:
-                        await stack.enter_async_context(cm())
+            if hooks._lifespan_cm is not None:
+                async with hooks._lifespan_cm():
+                    yield
+            else:
                 yield
 
-            for fn in registry._shutdown_hooks:
-                await _invoke(fn)
+            if hooks._cleanup_hook is not None:
+                await _invoke(hooks._cleanup_hook.func)
 
         app = FastAPI(
             title="FluidKit Generated Remote Functions",
             lifespan=master_lifespan,
         )
         app.add_middleware(_FluidKitAuthMiddleware)
+
+
+        @app.post("/__fk_hooks__")
+        async def fk_hooks_handler(body: dict):
+            from fluidkit.hooks import hooks
+            from fluidkit.models import HookRequestContext
+            from fluidkit.exceptions import HTTPError, Redirect
+            from fluidkit.types import Cookies, HookEvent, _LocalsDict
+
+            if not hooks._handle_hooks:
+                return JSONResponse({"__fk_cookies": [], "__fk_locals": {}})
+
+            context = HookRequestContext(
+                url=body.get("url", ""),
+                method=body.get("method", "GET"),
+                headers=body.get("headers", {}),
+                cookies=body.get("cookies", []),
+                is_remote=False,
+            )
+
+            request_cookies = {c["name"]: c["value"] for c in context.cookies}
+            cookies = Cookies(request_cookies=request_cookies, allow_set=True)
+            locals_ = _LocalsDict()
+            hook_event = HookEvent(context=context, cookies=cookies, locals=locals_)
+            fk_locals = {}
+
+            try:
+                async def noop_resolve():
+                    return None
+
+                _, fk_locals = await hooks.run_handle_chain(hook_event, noop_resolve)
+
+                return JSONResponse({
+                    "__fk_cookies": cookies.serialize(),
+                    "__fk_locals": fk_locals,
+                })
+
+            except Redirect as e:
+                return JSONResponse({
+                    "__fk_cookies": cookies.serialize(),
+                    "__fk_locals": fk_locals,
+                    "redirect": {"status": e.status, "location": e.location},
+                })
+            
+            except HTTPError as e:
+                return JSONResponse({
+                    "__fk_cookies": [],
+                    "__fk_locals": {},
+                    "error": {"status": e.status, "message": e.message},
+                }, status_code=e.status)
+
+            except Exception as e:
+                logger.exception(e)
+                return JSONResponse({
+                    "__fk_cookies": [],
+                    "__fk_locals": {},
+                    "error": {"status": 500, "message": "Internal server error"},
+                }, status_code=500)
+            
         return app
 
     def on_change(self, callback: Callable[[dict], None]):
@@ -222,67 +281,5 @@ class FluidKitRegistry:
                 del self._route_handlers[key]
             self._notify("unregister", metadata)
 
-    def on_startup(self, func: Callable) -> Callable:
-        """
-        Register an async or sync function to run at app startup.
-
-        Example:
-        ```python
-        @on_startup
-        async def init_db():
-            global db
-            db = await connect("postgres://...")
-        ```
-        """
-        self._startup_hooks.append(func)
-        return func
-
-    def on_shutdown(self, func: Callable) -> Callable:
-        """
-        Register an async or sync function to run at app shutdown.
-
-        Example:
-        ```python
-        @on_shutdown
-        async def cleanup():
-            await db.close()
-        ```
-        """
-        self._shutdown_hooks.append(func)
-        return func
-
-    def lifespan(self, func: Callable) -> Callable:
-        """
-        Register a lifespan context manager for paired setup/teardown.
-
-        The decorated function must be an async generator that yields once.
-        Optionally accepts the FastAPI app as a parameter.
-
-        Example:
-        ```python
-        @lifespan
-        async def manage_redis():
-            redis = await aioredis.from_url("redis://localhost")
-            yield
-            await redis.close()
-
-        @lifespan
-        async def manage_db(app):
-            db = await connect(app.state.db_url)
-            yield
-            await db.close()
-        ```
-        """
-        sig = inspect.signature(func)
-        has_app_param = len(sig.parameters) > 0
-        cm = asynccontextmanager(func)
-        self._lifespan_hooks.append((cm, has_app_param))
-        return func
-
 
 fluidkit_registry = FluidKitRegistry()
-
-
-lifespan = fluidkit_registry.lifespan
-on_startup = fluidkit_registry.on_startup
-on_shutdown = fluidkit_registry.on_shutdown

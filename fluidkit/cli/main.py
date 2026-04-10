@@ -3,7 +3,7 @@ import typer
 from .config import load_config
 from .scaffold import scaffold_project
 from .process import run_build, run_dev, run_preview
-from .utils import ensure_node_modules, run_node_tool
+from .utils import ensure_node_modules, run_node_tool, ensure_undici
 from .patch import check_svelte_experimental, patch_svelte_config, patch_vite_config
 
 
@@ -13,7 +13,9 @@ app = typer.Typer(help="FluidKit CLI")
 def _apply_patches(config: dict) -> None:
     patch_svelte_config(schema_output=config["schema_output"])
     patch_vite_config(frontend_port=config["frontend_port"])
+    # patch_app_dts()
     check_svelte_experimental()
+    ensure_undici()
 
 
 @app.command()

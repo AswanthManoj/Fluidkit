@@ -9,7 +9,7 @@ A complete read/write flow using all three runtime decorators:
 ```python
 # src/lib/blog.py
 from pydantic import BaseModel
-from fluidkit import query, command, form, Redirect
+from fluidkit import query, command, form, redirect
 
 class Post(BaseModel):
     id: int
@@ -17,7 +17,6 @@ class Post(BaseModel):
     content: str
     likes: int = 0
 
-# In-memory store for demo purposes
 posts: list[Post] = [
     Post(id=1, title="Hello World", content="First post.", likes=3),
 ]
@@ -35,7 +34,7 @@ async def create_post(title: str, content: str) -> None:
     post = Post(id=len(posts) + 1, title=title, content=content)
     posts.append(post)
     await get_posts().refresh()
-    raise Redirect(303, "/blog")
+    redirect(303, "/blog")
 
 @command
 async def like_post(post_id: int) -> bool:
@@ -71,8 +70,8 @@ async def delete_post(post_id: int) -> None:
   <article>
     <h2>{post.title}</h2>
     <p>{post.content}</p>
-    <button onclick={() => like_post(post.id)}>👍 {post.likes}</button>
-    <button onclick={() => delete_post(post.id)}>🗑️ Delete</button>
+    <button onclick={async () => await like_post(post.id)}>👍 {post.likes}</button>
+    <button onclick={async () => await delete_post(post.id)}>🗑️ Delete</button>
   </article>
 {/each}
 ```
@@ -80,10 +79,11 @@ async def delete_post(post_id: int) -> None:
 ## Batching queries
 
 Avoid the N+1 problem by batching concurrent queries into a single request:
+
 ```python
 # src/lib/weather.py
-from fluidkit import query, command
 from pydantic import BaseModel
+from fluidkit import query, command
 
 class CityWeather(BaseModel):
     city_id: str
@@ -92,8 +92,8 @@ class CityWeather(BaseModel):
 
 weather_db: dict[str, CityWeather] = {
     "nyc": CityWeather(city_id="nyc", name="New York", temp=72.0),
-    "la": CityWeather(city_id="la", name="Los Angeles", temp=85.0),
-    "sf": CityWeather(city_id="sf", name="San Francisco", temp=60.0),
+    "la":  CityWeather(city_id="la",  name="Los Angeles", temp=85.0),
+    "sf":  CityWeather(city_id="sf",  name="San Francisco", temp=60.0),
 }
 
 @query.batch
@@ -107,6 +107,7 @@ async def set_temp(city_id: str, temp: float) -> None:
         weather_db[city_id].temp = temp
         await get_weather(city_id).refresh()
 ```
+
 ```svelte
 <script>
   import { get_weather, set_temp } from '$lib/weather.remote';
@@ -119,13 +120,13 @@ async def set_temp(city_id: str, temp: float) -> None:
     {#await get_weather(id) then weather}
       <h3>{weather.name}</h3>
       <p>{weather.temp}°F</p>
-      <button onclick={() => set_temp(id, weather.temp + 1)}>+1°</button>
+      <button onclick={async () => await set_temp(id, weather.temp + 1)}>+1°</button>
     {/await}
   </div>
 {/each}
 ```
 
-All three `get_weather` calls in the `{#each}` block are batched into a single request — one database lookup instead of three. Clicking +1° refreshes only that city's data.
+All three `get_weather` calls in the `{#each}` block are batched into a single request. Clicking +1° refreshes only that city's data.
 
 ## Auth guard with cookies
 
@@ -133,18 +134,17 @@ Read and set cookies via `get_request_event()`:
 
 ```python
 # src/lib/auth.py
-from fluidkit import query, form, command, error, Redirect, get_request_event
+from fluidkit import query, form, command, error, redirect, get_request_event
 
 USERS = {"admin": "secret123"}
 
 @form
 async def login(username: str, _password: str) -> None:
     if USERS.get(username) != _password:
-        raise error(401, "Invalid credentials")
-
+        error(401, "Invalid credentials")
     event = get_request_event()
     event.cookies.set("session", username, httponly=True, path="/")
-    raise Redirect(303, "/dashboard")
+    redirect(303, "/dashboard")
 
 @command
 async def logout() -> None:
@@ -253,7 +253,7 @@ async def get_catalog(page: int = 1, category: Category | None = None) -> Catalo
 FluidKit generates:
 
 ```typescript
-// in $fluidkit/schema.ts (auto-generated)
+// $fluidkit/schema.ts (auto-generated)
 export enum Category {
   ELECTRONICS = "electronics",
   BOOKS = "books",
@@ -287,61 +287,54 @@ from fluidkit import query, get_request_event
 @query
 async def get_session_info() -> dict:
     event = get_request_event()
-
     return {
         "session_id": event.cookies.get("session_id"),
         "locale": event.cookies.get("locale") or "en",
+        "url": event.url,
+        "method": event.method,
     }
 ```
 
-`event.cookies.get(name)` reads a cookie. `event.cookies.set(name, value, **kwargs)` sets one — but only in `@form` and `@command`. Calling `set` in `@query` or `@prerender` raises a `RuntimeError`.
+`event.url`, `event.method`, and `event.headers` are available in all decorators. `event.cookies.get(name)` reads a cookie. `event.cookies.set(name, value, **kwargs)` sets one — only in `@form` and `@command`. Calling `set` in `@query` or `@prerender` raises `RuntimeError`.
 
-`event.locals` is a dict you can use to pass data between hooks and handlers.
+`event.locals` is shared between `@hooks.handle` and the remote function handler. Serializable values set here are forwarded to SvelteKit. See [Hooks](hooks.md).
 
-## Lifecycle hooks
+## Hooks
 
-Manage startup/shutdown tasks and long-lived resources:
+Manage startup/shutdown tasks and intercept remote function calls:
 
 ```python
 # src/app.py
-from fluidkit import on_startup, on_shutdown, lifespan
+from fluidkit import hooks
+import aioredis
 
 db = None
+redis = None
 
-@on_startup
+@hooks.init
 async def connect_db():
     global db
     db = await Database.connect("postgresql://...")
-    print("Database connected")
 
-@on_shutdown
+@hooks.cleanup
 async def disconnect_db():
-    await db.disconnect()
-    print("Database disconnected")
-```
+    await db.close()
 
-For paired setup/teardown, use `@lifespan`:
-
-```python
-redis_client = None
-
-@lifespan
+@hooks.lifespan
 async def manage_redis():
-    global redis_client
-    redis_client = await aioredis.from_url("redis://localhost")
+    global redis
+    redis = await aioredis.from_url("redis://localhost")
     yield
-    await redis_client.close()
+    await redis.close()
+
+@hooks.handle
+async def auth(event, resolve):
+    token = event.cookies.get("access_token")
+    event.locals["user"] = await verify_token(token)
+    return await resolve(event)
 ```
 
-`@lifespan` can optionally accept the FastAPI app:
-
-```python
-@lifespan
-async def manage_resources(app):
-    app.state.cache = {}
-    yield
-    app.state.cache.clear()
-```
+See [Hooks](hooks.md) for the full reference.
 
 ## preserve() for HMR-safe state
 
@@ -359,6 +352,6 @@ client = preserve(lambda: httpx.AsyncClient(base_url="https://api.example.com"))
 cache = preserve({})
 ```
 
-`preserve()` accepts a value or a zero-argument callable. If a callable is passed, it's invoked only on the first execution. On subsequent HMR reloads, the stored value is returned.
+`preserve()` accepts a value or a zero-argument callable. If a callable is passed, it is invoked only on the first execution. On subsequent HMR reloads the stored value is returned.
 
 > Don't use `preserve()` for values you want to update during development — those update automatically via HMR. Only use it for objects that must survive re-execution.

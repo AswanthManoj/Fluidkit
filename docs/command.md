@@ -66,7 +66,7 @@ async def like_post(post_id: int) -> LikeResult:
 
 ## Errors
 
-Raise `error()` to return an HTTP error to the client:
+Call `error()` to return an HTTP error to the client:
 
 ```python
 from fluidkit import command, error, get_request_event
@@ -76,11 +76,11 @@ async def delete_post(post_id: int) -> None:
     event = get_request_event()
     session_id = event.cookies.get("session_id")
     if not session_id:
-        raise error(401, "Unauthorized")
+        error(401, "Unauthorized")
     
     post = await db.find(post_id)
     if not post:
-        raise error(404, "Not found")
+        error(404, "Not found")
     
     await db.delete(post_id)
 ```
@@ -166,7 +166,7 @@ async def logout() -> None:
 
 ## Redirects
 
-Commands do not support redirects. If you raise `Redirect` inside a `@command`, it will be logged as a warning and ignored on the client. Use [`@form`](form.md) if you need redirect behavior after a mutation.
+Commands do not support redirects. If you call `redirect` inside a `@command`, it will be logged as a warning and ignored on the client. Use [`@form`](form.md) if you need redirect behavior after a mutation.
 
 ## Next steps
 

@@ -45,6 +45,25 @@ class Redirect(Exception):
         super().__init__(f"Redirect {status} to {location}")
 
 
+def redirect(status: int, location: str) -> None:
+    """
+    Trigger a navigation redirect.
+
+    Args:
+        status: HTTP redirect status code (300-308)
+        location: Destination URL or path
+
+    Example:
+```python
+        @form
+        async def create_post(title: str) -> None:
+            post_id = await db.insert(title)
+            redirect(303, f'/posts/{post_id}')
+```
+    """
+    raise Redirect(status, location)
+
+
 def error(status: int, message: str) -> HTTPError:
     """
     Raise an HTTP error with a custom message.

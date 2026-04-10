@@ -65,7 +65,7 @@ from fluidkit import query, error
 async def get_post(slug: str):
     post = db.get(slug)
     if not post:
-        raise error(404, "Not found")
+        error(404, "Not found")
     return post
 ```
 
@@ -119,7 +119,7 @@ The Svelte side gets full type safety — `post.title` autocompletes, `post.none
 
 ## Errors
 
-Raise `error()` to return an HTTP error to the client:
+Call `error()` to return an HTTP error to the client:
 ```python
 from fluidkit import query, error
 
@@ -127,7 +127,7 @@ from fluidkit import query, error
 async def get_post(slug: str):
     post = await db.find(slug)
     if not post:
-        raise error(404, "Not found")
+        error(404, "Not found")
     return post
 ```
 
@@ -214,7 +214,7 @@ async def get_profile():
     event = get_request_event()
     session_id = event.cookies.get("session_id")
     if not session_id:
-        raise error(401, "Unauthorized")
+        error(401, "Unauthorized")
     return await db.get_user(session_id)
 ```
 

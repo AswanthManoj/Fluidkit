@@ -34,7 +34,7 @@ Starts the FastAPI backend and Vite dev server together. Python changes are pick
 fluidkit build
 ```
 
-Runs codegen and then `npm run build`. Use this to produce a production build.
+Runs codegen, starts the backend server, and then runs `npm run build`. The backend must be running during the build for prerender to work.
 
 | Flag | Description |
 |---|---|
