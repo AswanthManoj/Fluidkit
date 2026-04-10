@@ -1,10 +1,10 @@
 import json
 import re
 from pathlib import Path
-
 from .utils import _COLORS, echo
 
 
+_APP_DTS = "src/app.d.ts"
 
 _VITE_CONFIGS = ("vite.config.ts", "vite.config.js")
 _SVELTE_CONFIGS = ("svelte.config.js", "svelte.config.ts")
@@ -285,3 +285,59 @@ def _patch_vite_port_block(source: str, block_name: str, port: int) -> str:
         return before + comma + f"\n\t{block_name}: {{\n\t\tport: {port}\n\t}}\n" + source[insert_at:]
 
     return source
+
+
+# def patch_app_dts(project_root: str = ".") -> bool:
+#     app_dts_path = Path(project_root) / _APP_DTS
+
+#     if not app_dts_path.exists():
+#         return False
+
+#     original = app_dts_path.read_text(encoding="utf-8")
+
+#     # Case 1: already patched -- no-op
+#     if _FK_LOCALS_PROP in original:
+#         return True
+
+#     # Case 2: uncommented interface Locals -- find it, brace-match, rebuild
+#     for m in re.finditer(r"^(\s*)interface Locals\s*(\{)", original, re.MULTILINE):
+#         line_start = original.rfind("\n", 0, m.start()) + 1
+#         if "//" in original[line_start:m.start(1)]:
+#             continue
+
+#         base_indent = m.group(1)
+#         prop_indent = base_indent + "\t"
+#         brace_pos = m.start(2)
+
+#         depth = 1
+#         i = brace_pos + 1
+#         while i < len(original) and depth > 0:
+#             if original[i] == "{":
+#                 depth += 1
+#             elif original[i] == "}":
+#                 depth -= 1
+#             i += 1
+
+#         if depth != 0:
+#             continue
+
+#         body = original[brace_pos + 1 : i - 1]
+#         existing_lines = [l for l in body.splitlines() if l.strip()]
+#         all_lines = existing_lines + [f"{prop_indent}{_FK_LOCALS_PROP}"]
+#         inner = "\n".join(all_lines)
+#         replacement = f"{base_indent}interface Locals {{\n{inner}\n{base_indent}}}"
+#         patched = original[: m.start()] + replacement + original[i:]
+#         app_dts_path.write_text(patched, encoding="utf-8")
+#         return True
+
+#     # Case 3: commented out interface Locals -- uncomment and inject
+#     m = re.search(r"^(\s*)//\s*interface Locals\s*\{\}", original, re.MULTILINE)
+#     if m:
+#         base_indent = m.group(1)
+#         prop_indent = base_indent + "\t"
+#         replacement = f"{base_indent}interface Locals {{\n{prop_indent}{_FK_LOCALS_PROP}\n{base_indent}}}"
+#         patched = original[: m.start()] + replacement + original[m.end():]
+#         app_dts_path.write_text(patched, encoding="utf-8")
+#         return True
+
+#     return False

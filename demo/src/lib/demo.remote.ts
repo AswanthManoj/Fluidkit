@@ -3,8 +3,9 @@
 
 import { error, redirect } from '@sveltejs/kit';
 import { command, form, query, getRequestEvent } from '$app/server';
-import { extractFiles, getRemoteFunction, hasFiles, registerRemoteFunction } from '$fluidkit/registry';
-import { BASE_URL } from '$fluidkit/config';
+import { getRemoteFunction, registerRemoteFunction } from '$fluidkit/registry';
+import { BASE_URL, _fk_fetch } from '$fluidkit/config';
+import { signRequest } from '$fluidkit/auth';
 
 /**
  * Fetch all posts.
@@ -25,14 +26,23 @@ import { BASE_URL } from '$fluidkit/config';
  * ```
  */
 export const get_posts = query(async () => {
-  const { cookies: _fk_cookies } = getRequestEvent();
-  const _fk_res = await fetch(`${BASE_URL}/remote/src/lib/demo/get_posts`, {
+  const _fk_event = getRequestEvent();
+  const { cookies: _fk_cookies } = _fk_event;
+  const _fk_context = {
+    url: _fk_event.url.href,
+    method: _fk_event.request.method,
+    headers: Object.fromEntries(_fk_event.request.headers),
+    cookies: _fk_cookies.getAll(),
+    is_remote: true,
+  };
+  const _fk_res = await _fk_fetch(`${BASE_URL}/remote/src/lib/demo/get_posts`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Cookie': _fk_cookies.getAll().map(c => `${c.name}=${c.value}`).join('; '),
+      'X-FluidKit-Token': signRequest(),
     },
-    body: JSON.stringify({}),
+    body: JSON.stringify({ __fk_payload: {}, __fk_context: _fk_context }),
   });
   if (!_fk_res.ok) {
     const _fk_err = await _fk_res.json();
@@ -40,6 +50,9 @@ export const get_posts = query(async () => {
     error(_fk_res.status, _fk_err.message ?? 'Unexpected error');
   }
   const _fk_body = await _fk_res.json();
+  if (_fk_body.__fk_locals) {
+    Object.assign(_fk_event.locals, _fk_body.__fk_locals);
+  }
   return _fk_body.result as any;
 });
 
@@ -64,14 +77,23 @@ export const get_posts = query(async () => {
  * ```
  */
 export const like_post = command('unchecked', async (post_id: number) => {
-  const { cookies: _fk_cookies } = getRequestEvent();
-  const _fk_res = await fetch(`${BASE_URL}/remote/src/lib/demo/like_post`, {
+  const _fk_event = getRequestEvent();
+  const { cookies: _fk_cookies } = _fk_event;
+  const _fk_context = {
+    url: _fk_event.url.href,
+    method: _fk_event.request.method,
+    headers: Object.fromEntries(_fk_event.request.headers),
+    cookies: _fk_cookies.getAll(),
+    is_remote: true,
+  };
+  const _fk_res = await _fk_fetch(`${BASE_URL}/remote/src/lib/demo/like_post`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Cookie': _fk_cookies.getAll().map(c => `${c.name}=${c.value}`).join('; '),
+      'X-FluidKit-Token': signRequest(),
     },
-    body: JSON.stringify({ post_id }),
+    body: JSON.stringify({ __fk_payload: { post_id }, __fk_context: _fk_context }),
   });
   if (!_fk_res.ok) {
     const _fk_err = await _fk_res.json();
@@ -79,8 +101,11 @@ export const like_post = command('unchecked', async (post_id: number) => {
     error(_fk_res.status, _fk_err.message ?? 'Unexpected error');
   }
   const _fk_body = await _fk_res.json();
-  for (const { name: _fk_cn, value: _fk_cv, ..._fk_co } of _fk_body.__fluidkit?.cookies ?? []) {
-    _fk_cookies.set(_fk_cn, _fk_cv, _fk_co);
+  for (const { name: _fk_cn, value: _fk_cv, ..._fk_co } of _fk_body.__fk_cookies ?? []) {
+    _fk_event.cookies.set(_fk_cn, _fk_cv, _fk_co);
+  }
+  if (_fk_body.__fk_locals) {
+    Object.assign(_fk_event.locals, _fk_body.__fk_locals);
   }
   for (const { key: _fk_key, args: _fk_args, data: _fk_data } of _fk_body.__fluidkit?.mutations ?? []) {
     const _fk_fn = getRemoteFunction(_fk_key);
@@ -112,33 +137,25 @@ export const like_post = command('unchecked', async (post_id: number) => {
  * ```
  */
 export const add_post = form('unchecked', async (data) => {
-  const { cookies: _fk_cookies } = getRequestEvent();
+  const _fk_event = getRequestEvent();
+  const { cookies: _fk_cookies } = _fk_event;
+  const _fk_context = {
+    url: _fk_event.url.href,
+    method: _fk_event.request.method,
+    headers: Object.fromEntries(_fk_event.request.headers),
+    cookies: _fk_cookies.getAll(),
+    is_remote: true,
+  };
 
-  let _fk_res: Response;
-  if (!hasFiles(data)) {
-    _fk_res = await fetch(`${BASE_URL}/remote/src/lib/demo/add_post`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Cookie': _fk_cookies.getAll().map(c => `${c.name}=${c.value}`).join('; '),
-      },
-      body: JSON.stringify(data),
-    });
-  } else {
-    const { json: _fk_json, files: _fk_files } = extractFiles(data);
-    const _fk_form = new FormData();
-    _fk_form.append('__fluidkit_data', JSON.stringify(_fk_json));
-    for (const [_fk_path, _fk_file] of _fk_files) {
-      _fk_form.append(_fk_path, _fk_file);
-    }
-    _fk_res = await fetch(`${BASE_URL}/remote/src/lib/demo/add_post`, {
-      method: 'POST',
-      headers: {
-        'Cookie': _fk_cookies.getAll().map(c => `${c.name}=${c.value}`).join('; '),
-      },
-      body: _fk_form,
-    });
-  }
+  const _fk_res = await _fk_fetch(`${BASE_URL}/remote/src/lib/demo/add_post`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Cookie': _fk_cookies.getAll().map(c => `${c.name}=${c.value}`).join('; '),
+      'X-FluidKit-Token': signRequest(),
+    },
+    body: JSON.stringify({ __fk_payload: data, __fk_context: _fk_context }),
+  });
 
   if (!_fk_res.ok) {
     const _fk_err = await _fk_res.json();
@@ -146,8 +163,11 @@ export const add_post = form('unchecked', async (data) => {
     error(_fk_res.status, _fk_err.message ?? 'Unexpected error');
   }
   const _fk_body = await _fk_res.json();
-  for (const { name: _fk_cn, value: _fk_cv, ..._fk_co } of _fk_body.__fluidkit?.cookies ?? []) {
-    _fk_cookies.set(_fk_cn, _fk_cv, _fk_co);
+  for (const { name: _fk_cn, value: _fk_cv, ..._fk_co } of _fk_body.__fk_cookies ?? []) {
+    _fk_event.cookies.set(_fk_cn, _fk_cv, _fk_co);
+  }
+  if (_fk_body.__fk_locals) {
+    Object.assign(_fk_event.locals, _fk_body.__fk_locals);
   }
   if ('redirect' in _fk_body) redirect(_fk_body.redirect.status, _fk_body.redirect.location);
   for (const { key: _fk_key, args: _fk_args, data: _fk_data } of _fk_body.__fluidkit?.mutations ?? []) {

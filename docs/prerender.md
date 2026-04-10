@@ -42,7 +42,7 @@ from fluidkit import prerender, error
 async def get_post(slug: str) -> Post:
     post = await db.find(slug)
     if not post:
-        raise error(404, "Not found")
+        error(404, "Not found")
     return post
 ```
 
@@ -70,7 +70,7 @@ Pass a list of arguments to prerender at build time:
 async def get_post(slug: str) -> Post:
     post = await db.find(slug)
     if not post:
-        raise error(404, "Not found")
+        error(404, "Not found")
     return post
 ```
 
@@ -103,7 +103,7 @@ By default, prerender functions are excluded from your server bundle — calling
 async def get_post(slug: str) -> Post:
     post = await db.find(slug)
     if not post:
-        raise error(404, "Not found")
+        error(404, "Not found")
     return post
 ```
 

@@ -1,7 +1,6 @@
 import inspect
 from enum import StrEnum
 from typing import Any, Generic, TypeVar
-
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -32,13 +31,21 @@ class DecoratorType(StrEnum):
     QUERY_BATCH = "query_batch"
 
 
+class HookType(StrEnum):
+    INIT = "init"
+    CLEANUP = "cleanup"
+    LIFESPAN = "lifespan"
+    HANDLE = "handle"
+    HANDLE_ERROR = "handle_error"
+    HANDLE_VALIDATION_ERROR = "handle_validation_error"
+
+
 class MutationType(StrEnum):
     SET = "set"
     REFRESH = "refresh"
 
 
 # ── FluidKit Metadata Models ────────────────────────────────────────────────
-
 
 class MutationEntry(BaseModel):
     """Base model for a mutation entry"""
@@ -90,31 +97,6 @@ class FunctionMetadata(BaseModel):
     prerender_dynamic: bool = False
 
 
-# ── Response Models ─────────────────────────────────────────────────────────
-
-T = TypeVar("T")
-
-
-class QueryResponse(BaseModel, Generic[T]):
-    """Response for @query and @prerender"""
-
-    result: T
-
-
-class BatchQueryResponse(BaseModel):
-    """Response for @query.batch"""
-
-    results: list[Any]
-
-
-class CommandResponse(BaseModel, Generic[T]):
-    """Response for @command and @form (success)"""
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    result: T
-    fluidkit_metadata: FluidKitMetadata = Field(default_factory=FluidKitMetadata, alias="__fluidkit")
-
 
 class RedirectData(BaseModel):
     """Redirect information"""
@@ -123,17 +105,63 @@ class RedirectData(BaseModel):
     location: str
 
 
+# ── Hooks Models ────────────────────────────────────────────────
+
+class HookRequestContext(BaseModel):
+    """Context sent to Python with each remote function call."""
+    url: str
+    method: str
+    cookies: list[dict[str, str]]
+    headers: dict[str, str]
+    is_remote: bool
+
+
+# ── Response Models ─────────────────────────────────────────────────────────
+
+T = TypeVar("T")
+
+
+class QueryResponse(BaseModel, Generic[T]):
+    """Response for @query and @prerender"""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    result: T
+    fk_locals: dict[str, Any] = Field(default_factory=dict, alias="__fk_locals")
+
+
+class BatchQueryResponse(BaseModel):
+    """Response for @query.batch"""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    results: list[Any]
+    fk_locals: dict[str, Any] = Field(default_factory=dict, alias="__fk_locals")
+
+
+class CommandResponse(BaseModel, Generic[T]):
+    """Response for @command and @form (success)"""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    result: T
+    fk_locals: dict[str, Any] = Field(default_factory=dict, alias="__fk_locals")
+    fk_cookies: list[dict[str, Any]] = Field(default_factory=list, alias="__fk_cookies")
+    fluidkit_metadata: FluidKitMetadata = Field(default_factory=FluidKitMetadata, alias="__fluidkit")
+
+
 class RedirectResponse(BaseModel):
     """Response for @command/@form with redirect"""
 
     model_config = ConfigDict(populate_by_name=True)
 
     redirect: RedirectData
+    fk_locals: dict[str, Any] = Field(default_factory=dict, alias="__fk_locals")
+    fk_cookies: list[dict[str, Any]] = Field(default_factory=list, alias="__fk_cookies")
     fluidkit_metadata: FluidKitMetadata = Field(default_factory=FluidKitMetadata, alias="__fluidkit")
 
 
 # ── Error Models ────────────────────────────────────────────────────────────
-
 
 class FluidKitErrorDetails(BaseModel):
     """Error details for development mode"""
@@ -151,7 +179,6 @@ class UnhandledErrorResponse(BaseModel):
 
 # ── Request Models (for endpoints) ──────────────────────────────────────────
 
-
 class FileUploadInfo(BaseModel):
     """Metadata for file uploads (not the file itself)"""
 
@@ -160,37 +187,47 @@ class FileUploadInfo(BaseModel):
     size: int
 
 
+class FluidKitEnvelope(BaseModel):
+    """Request envelope wrapping hook context and function payload."""
+    
+    model_config = ConfigDict(populate_by_name=True)
+    
+    fk_context: HookRequestContext | None = Field(None, alias="__fk_context")
+    fk_payload: dict[str, Any] = Field(default_factory=dict, alias="__fk_payload")
+
+
 # ── Helper Functions ────────────────────────────────────────────────────────
 
-
-def create_query_response(result: Any) -> QueryResponse:
+def create_query_response(result: Any, locals: dict = None) -> QueryResponse:
     """Create a query response"""
-    return QueryResponse(result=result)
+    return QueryResponse(result=result, fk_locals=locals or {})
 
 
-def create_batch_query_response(results: list[Any]) -> BatchQueryResponse:
+def create_batch_query_response(results: list[Any], locals: dict = None) -> BatchQueryResponse:
     """Create a batch query response"""
-    return BatchQueryResponse(results=results)
+    return BatchQueryResponse(results=results, fk_locals=locals or {})
 
 
 def create_command_response(
     result: Any,
     mutations: list[MutationEntry] = None,
     cookies: list[dict] = None,
+    locals: dict = None
 ) -> CommandResponse:
     """Create a command response with optional mutations and cookie instructions"""
     metadata = FluidKitMetadata(mutations=mutations or [], cookies=cookies or [])
-    return CommandResponse(result=result, __fluidkit=metadata)
+    return CommandResponse(result=result, __fluidkit=metadata, fk_locals=locals or {}, fk_cookies=cookies or [])
 
 
 def create_redirect_response(
     status: int,
     location: str,
     cookies: list[dict] = None,
+    locals: dict = None
 ) -> RedirectResponse:
     redirect_data = RedirectData(status=status, location=location)
     metadata = FluidKitMetadata(cookies=cookies or [])
-    return RedirectResponse(redirect=redirect_data, __fluidkit=metadata)
+    return RedirectResponse(redirect=redirect_data, __fluidkit=metadata, fk_locals=locals or {}, fk_cookies=cookies or [])
 
 
 def create_error_response(

@@ -19,6 +19,7 @@ from fluidkit.context import (
 from fluidkit.exceptions import HTTPError, Redirect
 from fluidkit.models import (
     DecoratorType,
+    FluidKitEnvelope,
     create_error_response,
     create_query_response,
     create_command_response,
@@ -33,7 +34,7 @@ from fluidkit.utilities import (
     setup_request_context,
     inject_request_if_needed,
 )
-from fluidkit.types import RemoteProxy, AsyncRemoteProxy, FileUpload, RequestEvent
+from fluidkit.types import RemoteProxy, AsyncRemoteProxy, FileUpload, RequestEvent, HookEvent
 
 
 T = TypeVar("T")
@@ -102,6 +103,7 @@ def _wrap_and_register(func, metadata, sig):
             func_name=f"{metadata.module}#{metadata.name}",
         )
     update_wrapper(wrapper, func)
+    wrapper.__fluidkit__ = metadata.decorator_type
     return wrapper
 
 
@@ -125,9 +127,11 @@ def _make_remote(
       form:      context=yes, cookies=rw, body=form, redirect=respond, valuerror=yes
       prerender: context=no,  cookies=ro, body=json, redirect=none,    valuerror=no
     """
+    from fluidkit.hooks import hooks
+
     metadata, request_param_name, sig = extract_metadata(func=func, decorator_type=decorator_type)
 
-    _validators: Dict[str: TypeAdapter] = {}
+    _validators: Dict[str, TypeAdapter] = {}
     for param_name, param in sig.parameters.items():
         if param.annotation is inspect.Parameter.empty:
             continue
@@ -137,50 +141,70 @@ def _make_remote(
             continue
         _validators[param_name] = TypeAdapter(param.annotation)
 
+    _valid_params = frozenset(sig.parameters.keys())
+    _is_coroutine = inspect.iscoroutinefunction(func)
+
     async def fastapi_handler(request: Request):
         request_event, cookies, request_event_token = setup_request_context(
             request=request, allow_set_cookies=allow_set_cookies
         )
         ctx = None
+        fk_locals = {}
         ctx_token = None
-        if use_context:
-            ctx = FluidKitContext()
-            ctx_token = set_context(ctx)
+        hook_context = None
 
         try:
             if use_form_parsing:
-                body = await parse_request_data(request, sig)
+                body, hook_context = await parse_request_data(request, sig)
             else:
-                body = await request.json()
+                raw = await request.json()
+                envelope = FluidKitEnvelope.model_validate(raw)
+                body, hook_context = envelope.fk_payload, envelope.fk_context
+            
+            if hook_context is not None:
+                request_event._populate_request(hook_context)
 
-            kwargs = inject_request_if_needed(
-                sig=sig, args=(), kwargs=body,
-                request_event=request_event,
-                request_param_name=request_param_name,
-            )
+            async def call_next():
+                nonlocal ctx, ctx_token
+                if use_context:
+                    ctx = FluidKitContext()
+                    ctx_token = set_context(ctx)
 
-            for param_name, adapter in _validators.items():
-                if param_name in kwargs:
-                    kwargs[param_name] = adapter.validate_python(kwargs[param_name])
+                kwargs = inject_request_if_needed(
+                    sig=sig, args=(), kwargs=dict(body),
+                    request_event=request_event,
+                    request_param_name=request_param_name,
+                )
+                for param_name, adapter in _validators.items():
+                    if param_name in kwargs:
+                        kwargs[param_name] = adapter.validate_python(kwargs[param_name])
+                kwargs = {k: v for k, v in kwargs.items() if k in _valid_params}
 
-            valid_params = set(sig.parameters.keys())
-            kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
+                if _is_coroutine:
+                    return await func(**kwargs)
+                return await asyncio.to_thread(func, **kwargs)
 
-            if inspect.iscoroutinefunction(func):
-                result = await func(**kwargs)
+            if hook_context is not None and hooks._handle_hooks:
+                hook_event = HookEvent(
+                    context=hook_context,
+                    cookies=cookies.fork(allow_set=True),
+                    locals=request_event.locals,
+                )
+                result, fk_locals = await hooks.run_handle_chain(hook_event, call_next)
             else:
-                result = await asyncio.to_thread(func, **kwargs)
+                result = await call_next()
+                fk_locals = request_event.locals.serializable()
 
             if use_context:
-                response_data = create_command_response(result, ctx.mutations, cookies.serialize())
+                response_data = create_command_response(result, ctx.mutations, cookies.serialize(), fk_locals)
             else:
-                response_data = create_query_response(result)
+                response_data = create_query_response(result, fk_locals)
 
             return build_json_response(response_data)
 
         except Redirect as e:
             if redirect_behavior == "respond":
-                response_data = create_redirect_response(e.status, e.location, cookies.serialize())
+                response_data = create_redirect_response(e.status, e.location, cookies.serialize(), fk_locals)
                 return build_json_response(response_data)
             if redirect_behavior == "warn":
                 logger.warning(
@@ -188,7 +212,7 @@ def _make_remote(
                     "and will be ignored on the client. Use @form if redirect behavior is needed.",
                     func.__name__,
                 )
-                response_data = create_command_response(None, ctx.mutations, cookies.serialize())
+                response_data = create_command_response(None, ctx.mutations if ctx else [], cookies.serialize(), fk_locals)
                 return build_json_response(response_data)
             return _error_response(e)
 
@@ -196,21 +220,34 @@ def _make_remote(
             return _http_error_response(e)
 
         except ValidationError as e:
+            custom = await hooks._invoke_handle_validation_error(e.errors(), request_event)
+            if custom is not None:
+                return JSONResponse(status_code=400, content=custom)
             return _validation_error_response(e, func.__name__, metadata.module)
-
-        except TypeError as e:
-            return _type_error_response(e, func.__name__, metadata.module)
         
+        except TypeError as e:
+            message = f"Invalid arguments for {metadata.module}.{func.__name__}(): {e}"
+            custom = await hooks._invoke_handle_error(e, request_event, 400, message)
+            if custom is not None:
+                return JSONResponse(status_code=400, content=custom)
+            return _type_error_response(e, func.__name__, metadata.module)
+
         except ValueError as e:
             if catch_value_error:
-                return _error_response(
-                    e,
-                    status=400,
-                    message=f"Invalid data in {func.__name__}(): {e}",
-                )
+                message = f"Invalid data in {func.__name__}(): {e}"
+                custom = await hooks._invoke_handle_error(e, request_event, 400, message)
+                if custom is not None:
+                    return JSONResponse(status_code=400, content=custom)
+                return _error_response(e, status=400, message=message)
+            custom = await hooks._invoke_handle_error(e, request_event, 500, str(e))
+            if custom is not None:
+                return JSONResponse(status_code=500, content=custom)
             return _error_response(e)
 
         except Exception as e:
+            custom = await hooks._invoke_handle_error(e, request_event, 500, str(e))
+            if custom is not None:
+                return JSONResponse(status_code=500, content=custom)
             return _error_response(e)
 
         finally:
@@ -232,7 +269,7 @@ def _make_remote(
 # =================================================================================
 
 
-class query:
+class _Query:
     """
     Create a remote query function for reading data.
 
@@ -247,12 +284,12 @@ class query:
     ```
     """
     @overload
-    def __new__(cls, func: Callable[P, Awaitable[T]]) -> Callable[P, AsyncRemoteProxy[T]]: ...
+    def __call__(cls, func: Callable[P, Awaitable[T]]) -> Callable[P, AsyncRemoteProxy[T]]: ...
 
     @overload
-    def __new__(cls, func: Callable[P, T]) -> Callable[P, RemoteProxy[T]]: ...
+    def __call__(cls, func: Callable[P, T]) -> Callable[P, RemoteProxy[T]]: ...
 
-    def __new__(cls, func):
+    def __call__(cls, func):
         wrapper, _ = _make_remote(func, DecoratorType.QUERY)
         return wrapper
     
@@ -282,41 +319,66 @@ class query:
                 return lambda city_id: lookup.get(city_id)
         ```
         """
+        from fluidkit.hooks import hooks
+
         metadata, request_param_name, sig = extract_metadata(func=func, decorator_type=DecoratorType.QUERY_BATCH)
+
+        _is_coroutine = inspect.iscoroutinefunction(func)
 
         async def fastapi_handler(request: Request):
             request_event, cookies, request_event_token = setup_request_context(
                 request=request, allow_set_cookies=False
             )
+            fk_locals = {}
+            hook_context = None
 
             try:
-                body = await request.json()
+                raw = await request.json()
+                envelope = FluidKitEnvelope.model_validate(raw)
+                body = envelope.fk_payload
+                hook_context = envelope.fk_context
+                if hook_context is not None:
+                    request_event._populate_request(hook_context)
                 args_list = body.get("args", [])
 
-                if inspect.iscoroutinefunction(func):
-                    result = await func(args_list)
-                else:
-                    result = await asyncio.to_thread(func, args_list)
+                async def call_next():
+                    if _is_coroutine:
+                        resolver = await func(args_list)
+                    else:
+                        resolver = await asyncio.to_thread(func, args_list)
+                    if not callable(resolver):
+                        param_name = metadata.parameters[0].name if metadata.parameters else "items"
+                        raise TypeError(
+                            f"@query.batch '{func.__name__}' must return a callable, "
+                            f"got {type(resolver).__name__}. Expected pattern:\n\n"
+                            f"  @query.batch\n"
+                            f"  async def {func.__name__}({param_name}: list[...]):\n"
+                            f"      ...\n"
+                            f"      return lambda item: result_for(item)\n"
+                        )
+                    return [resolver(arg, i) for i, arg in enumerate(args_list)]
 
-                if not callable(result):
-                    param_name = metadata.parameters[0].name if metadata.parameters else "items"
-                    raise TypeError(
-                        f"@query.batch '{func.__name__}' must return a callable, "
-                        f"got {type(result).__name__}. Expected pattern:\n\n"
-                        f"  @query.batch\n"
-                        f"  async def {func.__name__}({param_name}: list[...]):\n"
-                        f"      ...\n"
-                        f"      return lambda item: result_for(item)\n"
+                if hook_context is not None and hooks._handle_hooks:
+                    hook_event = HookEvent(
+                        context=hook_context,
+                        cookies=cookies.fork(allow_set=True),
+                        locals=request_event.locals,
                     )
+                    result, fk_locals = await hooks.run_handle_chain(hook_event, call_next)
+                else:
+                    result = await call_next()
+                    fk_locals = request_event.locals.serializable()
 
-                results = [result(arg, i) for i, arg in enumerate(args_list)]
-                response_data = create_batch_query_response(results)
+                response_data = create_batch_query_response(result, fk_locals)
                 return build_json_response(response_data)
 
             except HTTPError as e:
                 return _http_error_response(e)
 
             except Exception as e:
+                custom = await hooks._invoke_handle_error(e, request_event, 500, str(e))
+                if custom is not None:
+                    return JSONResponse(status_code=500, content=custom)
                 return _error_response(e)
 
             finally:
@@ -325,7 +387,7 @@ class query:
         fastapi_handler.__name__ = func.__name__
         fastapi_handler.__doc__ = func.__doc__
 
-        if inspect.iscoroutinefunction(func):
+        if _is_coroutine:
             async def _single_executor(**kwargs):
                 single_arg = next(iter(kwargs.values()))
                 resolver = await func([single_arg])
@@ -342,7 +404,7 @@ class query:
         return _wrap_and_register(_single_executor, metadata, sig)
 
 
-class command:
+class _Command:
     """
     Create a remote command function for mutations.
 
@@ -358,23 +420,20 @@ class command:
     ```
     """
     @overload
-    def __new__(cls, func: Callable[P, Awaitable[T]]) -> Callable[P, AsyncRemoteProxy[T]]: ...
+    def __call__(cls, func: Callable[P, Awaitable[T]]) -> Callable[P, AsyncRemoteProxy[T]]: ...
 
     @overload
-    def __new__(cls, func: Callable[P, T]) -> Callable[P, RemoteProxy[T]]: ...
+    def __call__(cls, func: Callable[P, T]) -> Callable[P, RemoteProxy[T]]: ...
 
-    def __new__(cls, func):
+    def __call__(cls, func):
         wrapper, _ = _make_remote(
-            func,
-            DecoratorType.COMMAND,
-            allow_set_cookies=True,
-            use_context=True,
-            redirect_behavior="warn",
+            func, DecoratorType.COMMAND,
+            allow_set_cookies=True, use_context=True, redirect_behavior="warn",
         )
         return wrapper
 
 
-class form:
+class _Form:
     """
     Create a remote form handler with progressive enhancement.
 
@@ -390,25 +449,21 @@ class form:
     ```
     """
     @overload
-    def __new__(cls, func: Callable[P, Awaitable[T]]) -> Callable[P, AsyncRemoteProxy[T]]: ...
+    def __call__(cls, func: Callable[P, Awaitable[T]]) -> Callable[P, AsyncRemoteProxy[T]]: ...
 
     @overload
-    def __new__(cls, func: Callable[P, T]) -> Callable[P, RemoteProxy[T]]: ...
+    def __call__(cls, func: Callable[P, T]) -> Callable[P, RemoteProxy[T]]: ...
 
-    def __new__(cls, func):
+    def __call__(cls, func):
         wrapper, _ = _make_remote(
-            func,
-            DecoratorType.FORM,
-            allow_set_cookies=True,
-            use_context=True,
-            use_form_parsing=True,
-            redirect_behavior="respond",
-            catch_value_error=True,
+            func, DecoratorType.FORM,
+            allow_set_cookies=True, use_context=True,
+            use_form_parsing=True, redirect_behavior="respond", catch_value_error=True,
         )
         return wrapper
 
 
-class prerender:
+class _Prerender:
     """
     Create a remote function that prerenders data at build time.
 
@@ -428,12 +483,12 @@ class prerender:
     ```
     """
     @overload
-    def __new__(cls, func: Callable[P, Awaitable[T]]) -> Callable[P, AsyncRemoteProxy[T]]: ...
+    def __call__(cls, func: Callable[P, Awaitable[T]]) -> Callable[P, AsyncRemoteProxy[T]]: ...
 
     @overload
-    def __new__(cls, func: Callable[P, T]) -> Callable[P, RemoteProxy[T]]: ...
+    def __call__(cls, func: Callable[P, T]) -> Callable[P, RemoteProxy[T]]: ...
 
-    def __new__(cls, func=None, *, inputs=None, dynamic=False):
+    def __call__(cls, func=None, *, inputs=None, dynamic=False):
         def decorator(fn):
             wrapper, metadata = _make_remote(fn, decorator_type=DecoratorType.PRERENDER)
             metadata.prerender_dynamic = dynamic
@@ -457,3 +512,9 @@ class prerender:
         if func is None:
             return decorator
         return decorator(func)
+
+
+form = _Form()
+query = _Query()
+command = _Command()
+prerender = _Prerender()

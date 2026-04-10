@@ -176,3 +176,9 @@ async def run_node_tool_async(name: str, args: list[str]):
 
 def display_host(config: dict) -> str:
     return "localhost" if config["host"] == "0.0.0.0" else config["host"]
+
+
+def ensure_undici() -> None:
+    if not Path("node_modules/undici").exists():
+        echo("fluid", "undici not found, installing...", _COLORS["warn"])
+        run_node_tool("npm", ["install", "undici"])

@@ -2,7 +2,7 @@
 
 FluidKit provides four decorators for defining server-side functions. Each maps to a SvelteKit [remote function](https://svelte.dev/docs/kit/remote-functions) type. Decorate a Python function — FluidKit handles endpoint registration, TypeScript codegen, and client-side wiring.
 
-All decorated functions must be `async` and should use type annotations. Parameters and return values must be serializable — primitives, Pydantic models, or standard types like `list`, `dict`, and `Optional`. Unannotated parameters generate `any` in TypeScript, losing type safety.
+All decorated functions support both `async def` and plain `def`. Use `async def` when you need `await` — for database calls, HTTP requests, or cache mutations. FluidKit runs sync functions in a thread automatically. Parameters and return values must be serializable — primitives, Pydantic models, or standard types like `list`, `dict`, and `Optional`. Unannotated parameters generate `any` in TypeScript, losing type safety.
 
 ## @query
 
@@ -35,12 +35,12 @@ async def get_post_likes(post_ids: list[int]):
 Write data via `<form>` elements. Supports file uploads, progressive enhancement (works without JavaScript), and redirects.
 
 ```python
-from fluidkit import form, Redirect
+from fluidkit import form, redirect
 
 @form
 async def create_post(title: str, content: str) -> None:
     slug = await db.insert(title, content)
-    raise Redirect(303, f"/blog/{slug}")
+    redirect(303, f"/blog/{slug}")
 ```
 
 → [Full @form documentation](form.md)
@@ -87,6 +87,8 @@ async def get_page(slug: str) -> Page:
 | `@form` | | ✓ | ✓ | ✓ | ✓ | |
 | `@command` | | ✓ | | | | |
 | `@prerender` | ✓ (build-time) | | | | | |
+
+Use `@form` when your UI has a `<form>` element — you get progressive enhancement, file uploads, and redirect support for free. Use `@command` for everything else: button clicks, event handlers, or any imperative call that isn't tied to a form submission. When in doubt, `@command` is the simpler choice unless you need one of those three features.
 
 ## Type annotations
 

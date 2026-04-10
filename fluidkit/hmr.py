@@ -61,10 +61,18 @@ def _reconcile_module(module_name: str):
     ]
 
     for key, metadata in registered:
-        if module is None or not hasattr(module, metadata.name):
+        current = getattr(module, metadata.name, None)
+        if current is None or not getattr(current, "__fluidkit__", False):
             def op(m=metadata.module, n=metadata.name):
                 fluidkit_registry.unregister(m, n)
             _schedule_route_op(op)
+
+
+def _reconcile_hooks(module_name: str):
+    """Remove hook entries for functions no longer present in the module."""
+    from fluidkit.hooks import hooks
+    module = sys.modules.get(module_name)
+    hooks._reconcile_module(module_name, module)
 
 
 def _track_imports(module_name: str, filename: str):
@@ -216,11 +224,15 @@ def _on_postrun(path: str, cf) -> None:
         _track_imports(module_name, path)
         _rebind_changed(module_name)
         _reconcile_module(module_name)
+        _reconcile_hooks(module_name)
     while not _pending_attach.empty():
         try:
             attach_conform(_pending_attach.get_nowait())
         except queue.Empty:
             break
+
+    from fluidkit.codegen import _write_hooks_server_ts
+    _write_hooks_server_ts()
 
 
 def setup(watcher, watch_paths: tuple[str, ...] = ("./",)):

@@ -130,5 +130,7 @@ All four decorators support both `async` and regular sync functions. Use `async 
 - **[@command](command.md)** — writing data, updating queries, optimistic updates
 - **[@form](form.md)** — fields, validation, file uploads, progressive enhancement
 - **[@prerender](prerender.md)** — build-time data with optional runtime fallback
+- **[Hooks](hooks.md)** — lifecycle, request middleware, error handling
+- **[Cookbook](cookbook.md)** — complete production patterns including auth
 - **[CLI](cli.md)** — all available commands
 - **[Configuration](config.md)** — `fluidkit.config.json` reference

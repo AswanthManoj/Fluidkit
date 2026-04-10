@@ -2,6 +2,10 @@ import adapter from '@sveltejs/adapter-auto';
 
 /** @type {import('@sveltejs/kit').Config} */
 const config = {
+	compilerOptions: {
+		runes: ({ filename }) => filename.split(/[/\\]/).includes('node_modules') ? undefined : true,
+		experimental: { async: true }
+	},
 	kit: {
 		// adapter-auto only supports some environments, see https://svelte.dev/docs/kit/adapter-auto for a list.
 		// If your environment is not supported, or you settled on a specific environment, switch out the adapter.
@@ -9,11 +13,7 @@ const config = {
 		adapter: adapter(),
 		alias: { '$fluidkit': './src/lib/fluidkit' },
 		experimental: { remoteFunctions: true }
-	},
-	vitePlugin: {
-		dynamicCompileOptions: ({ filename }) => filename.includes('node_modules') ? undefined : { runes: true }
-	},
-	compilerOptions: { experimental: { async: true } }
+	}
 };
 
 export default config;

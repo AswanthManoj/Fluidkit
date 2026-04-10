@@ -19,9 +19,11 @@ from fluidkit.models import (
     FieldAnnotation,
     FunctionMetadata,
     RedirectResponse,
+    FluidKitEnvelope,
     ParameterMetadata,
+    HookRequestContext,
 )
-from fluidkit.types import Cookies, FileUpload, RequestEvent
+from fluidkit.types import Cookies, FileUpload, RequestEvent, _LocalsDict
 
 
 logger = logging.getLogger(__name__)
@@ -85,7 +87,7 @@ def extract_metadata(func: Callable, decorator_type: DecoratorType):
 
 def setup_request_context(request: Request, allow_set_cookies: bool):
     cookies = Cookies(allow_set=allow_set_cookies, request_cookies=request.cookies)
-    request_event = RequestEvent(locals={}, cookies=cookies)
+    request_event = RequestEvent(locals=_LocalsDict(), cookies=cookies)
     token = set_request_event(request_event)
     return request_event, cookies, token
 
@@ -125,22 +127,26 @@ def _inject_file_at_path(data: dict, path: str, file) -> None:
     target[parts[-1]] = file
 
 
-async def parse_request_data(request: Request, sig: inspect.Signature) -> dict:
+async def parse_request_data(request: Request, sig: inspect.Signature) -> tuple[dict, HookRequestContext | None]:
     content_type = request.headers.get("content-type", "")
 
     if "multipart/form-data" not in content_type and "application/x-www-form-urlencoded" not in content_type:
-        return await request.json()
+        body = await request.json()
+        envelope = FluidKitEnvelope.model_validate(body)
+        return envelope.fk_payload, envelope.fk_context
 
     form = await request.form()
-    raw_data = form.get("__fluidkit_data")
-    if raw_data is None:
-        return await request.json()
+    
+    context = None
+    if "__fk_context" in form:
+        context = HookRequestContext.model_validate_json(form["__fk_context"])
 
-    data = json.loads(raw_data)
+    payload = json.loads(form.get("__fk_payload", "{}"))
     for key in form:
-        if key != "__fluidkit_data":
-            _inject_file_at_path(data, key, form[key])
-    return data
+        if key not in ("__fk_context", "__fk_payload"):
+            _inject_file_at_path(payload, key, form[key])
+
+    return payload, context
 
 
 def build_json_response(response_data: QueryResponse | CommandResponse | RedirectResponse):

@@ -144,15 +144,15 @@ When files are present, FluidKit sends structured data as JSON alongside file fi
 
 ## Redirects
 
-Raise `Redirect` to navigate after a successful submission:
+Call `redirect` to navigate after a successful submission:
 ```python
-from fluidkit import form, Redirect
+from fluidkit import form, redirect
 
 @form
 async def create_post(title: str, content: str) -> None:
     slug = title.lower().replace(" ", "-")
     await db.insert(slug, title, content)
-    raise Redirect(303, f"/blog/{slug}")
+    redirect(303, f"/blog/{slug}")
 ```
 
 The redirect is captured by the FluidKit backend and forwarded to SvelteKit, which performs the navigation on the client. Common status codes:
@@ -163,7 +163,7 @@ The redirect is captured by the FluidKit backend and forwarded to SvelteKit, whi
 
 ## Errors
 
-Raise `error()` to return an HTTP error:
+Call `error()` to return an HTTP error:
 ```python
 from fluidkit import form, error, get_request_event
 
@@ -172,7 +172,7 @@ async def create_post(title: str, content: str) -> None:
     event = get_request_event()
     session_id = event.cookies.get("session_id")
     if not session_id:
-        raise error(401, "Unauthorized")
+        error(401, "Unauthorized")
     await db.insert(title, content)
 ```
 

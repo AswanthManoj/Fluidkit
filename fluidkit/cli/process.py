@@ -65,6 +65,7 @@ async def _stream(stream, prefix: str, color):
 
 
 async def _run_servers(config: dict, npm_command: str, hmr: bool = True) -> None:
+    from fluidkit.hooks import hooks
     from fluidkit.codegen import generate
     from fluidkit.explorer import mount, notify_change
     from fluidkit.codegen import watch as codegen_watch
@@ -99,6 +100,9 @@ async def _run_servers(config: dict, npm_command: str, hmr: bool = True) -> None
         echo("fluid", "HMR disabled", _COLORS["warn"])
 
     setup_logging()
+
+    for line in hooks._get_summary_lines():
+        echo("fluid", line)
 
     proc = await run_node_tool_async("npm", ["run", npm_command])
 
@@ -169,6 +173,7 @@ def run_preview(config: dict) -> None:
 
 
 def run_build(config: dict) -> None:
+    from fluidkit.hooks import hooks
     from fluidkit.codegen import generate
     from fluidkit.cli.scaffold import copy_runtime_files
 
@@ -188,6 +193,9 @@ def run_build(config: dict) -> None:
     echo("fluid", "codegen done")
 
     setup_logging()
+
+    for line in hooks._get_summary_lines():
+        echo("fluid", line)
 
     with _uvicorn_server(
         fluidkit_registry.app,

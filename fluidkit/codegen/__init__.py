@@ -36,9 +36,97 @@ def _write_config_ts(base_url: str, schema_output: str) -> None:
     config_path = Path(schema_output) / "config.ts"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(
-        f'{GENERATED_FILE_WARNING}export const BASE_URL = "{base_url}";\n',
+        f'{GENERATED_FILE_WARNING}'
+        f'import {{ Agent, fetch as _undici_fetch }} from \'undici\';\n\n'
+        f'export const BASE_URL = "{base_url}";\n\n'
+        f'const _fk_agent = new Agent({{\n'
+        f'  connections: null,\n'
+        f'  pipelining: 1,\n'
+        f'  keepAliveTimeout: 30_000,\n'
+        f'  keepAliveMaxTimeout: 60_000,\n'
+        f'}});\n\n'
+        f'export function _fk_fetch(url: string, init: object): Promise<Response> {{\n'
+        f'  return _undici_fetch(url, {{ ...init, dispatcher: _fk_agent }}) as unknown as Response;\n'
+        f'}}\n',
         encoding="utf-8",
     )
+
+
+def _write_hooks_server_ts() -> None:
+    import hashlib
+    from fluidkit.hooks import hooks
+    from fluidkit.registry import fluidkit_registry
+
+    hooks_path = Path("src/hooks.server.ts")
+
+    if not hooks.has_hooks:
+        if hooks_path.exists():
+            existing = hooks_path.read_text(encoding="utf-8")
+            if existing.startswith(GENERATED_FILE_WARNING):
+                hooks_path.unlink()
+                logger.debug("removed src/hooks.server.ts — no hooks registered")
+        return
+
+    signed = fluidkit_registry.signed
+    sign_import = "import { signRequest } from '$fluidkit/auth';\n" if signed else ""
+    sign_header = "\n          'X-FluidKit-Token': signRequest()," if signed else ""
+
+    content = (
+        f"{GENERATED_FILE_WARNING}"
+        "import type { Handle } from '@sveltejs/kit';\n"
+        "import { error, redirect } from '@sveltejs/kit';\n"
+        "import { BASE_URL, _fk_fetch } from '$fluidkit/config';\n"
+        f"{sign_import}"
+        "\n"
+        "export const handle: Handle = async ({ event, resolve }) => {\n"
+        "  const _fk_path = new URL(event.request.url).pathname;\n"
+        "  if (!_fk_path.startsWith('/remote/') && _fk_path !== '/__fk_hooks__') {\n"
+        "    try {\n"
+        "      const _fk_res = await _fk_fetch(`${BASE_URL}/__fk_hooks__`, {\n"
+        "        method: 'POST',\n"
+        "        headers: {\n"
+        "          'Content-Type': 'application/json',"
+        f"{sign_header}\n"
+        "        },\n"
+        "        body: JSON.stringify({\n"
+        "          url: event.request.url,\n"
+        "          method: event.request.method,\n"
+        "          headers: Object.fromEntries(event.request.headers),\n"
+        "          cookies: event.cookies.getAll(),\n"
+        "        }),\n"
+        "      });\n"
+        "      const _fk_body = await _fk_res.json();\n"
+        "      if (_fk_body.redirect) {\n"
+        "        redirect(_fk_body.redirect.status, _fk_body.redirect.location);\n"
+        "      }\n"
+        "      if (_fk_body.error) {\n"
+        "        error(_fk_body.error.status, _fk_body.error.message);\n"
+        "      }\n"
+        "      for (const { name, value, ...opts } of _fk_body.__fk_cookies ?? []) {\n"
+        "        event.cookies.set(name, value, { path: '/', ...opts });\n"
+        "      }\n"
+        "      Object.assign(event.locals, _fk_body.__fk_locals ?? {});\n"
+        "    } catch (_fk_err) {\n"
+        "      if (_fk_err instanceof Response) throw _fk_err;\n"
+        "      // silent — do not crash the page request\n"
+        "    }\n"
+        "  }\n"
+        "  return resolve(event);\n"
+        "};\n"
+    )
+
+    if hooks_path.exists():
+        existing = hooks_path.read_text(encoding="utf-8")
+        if hashlib.sha256(existing.encode()).hexdigest() == hashlib.sha256(content.encode()).hexdigest():
+            return
+        logger.warning(
+            "src/hooks.server.ts exists and differs from FluidKit's generated version — overwriting. "
+            "If you have custom handle logic, use SvelteKit's sequence() helper."
+        )
+
+    hooks_path.parent.mkdir(parents=True, exist_ok=True)
+    hooks_path.write_text(content, encoding="utf-8")
+    logger.debug("generated src/hooks.server.ts")
 
 
 def build_schema_ts(functions: list[FunctionMetadata]) -> str:
@@ -103,11 +191,10 @@ def generate(
     - $fluidkit/schema.ts with all Pydantic model interfaces
     """
     _write_config_ts(base_url, schema_output)
-
     generate_remote_files(functions, signed=signed)
-
     schema_ts = build_schema_ts(list(functions.values()))
     schema_path = Path(schema_output) / "schema.ts"
     schema_path.parent.mkdir(parents=True, exist_ok=True)
     schema_path.write_text(schema_ts, encoding="utf-8")
     logger.debug("generated %s", schema_path)
+    _write_hooks_server_ts()

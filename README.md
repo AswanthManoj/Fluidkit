@@ -108,10 +108,11 @@ FluidKit reflects on your decorated functions at import time — inspecting para
 
 - [Getting Started](docs/quickstart.md)
 - [Remote Functions](docs/remote_functions.md) — query, form, command, prerender
+- [Hooks](docs/hooks.md)
 - [CLI](docs/cli.md)
 - [Configuration](docs/config.md)
 - [Examples](docs/examples.md)
-
+- [Cookbook](docs/cookbook.md)
 
 ## CLI
 
